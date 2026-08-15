@@ -12,7 +12,7 @@ endif()
 
 add_library(driver_bigscreen_desktop SHARED
   src/driver.cpp
-  src/virtual_display.cpp
+  src/direct_mode.cpp
 )
 target_include_directories(driver_bigscreen_desktop PRIVATE "${OPENVR_SDK_ROOT}/headers")
 target_compile_features(driver_bigscreen_desktop PRIVATE cxx_std_17)

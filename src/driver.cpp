@@ -1,7 +1,7 @@
 #include <openvr_driver.h>
 #include <Windows.h>
 #include "pose_ipc.h"
-#include "virtual_display.h"
+#include "direct_mode.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -308,15 +308,27 @@ public:
         vr::VRProperties()->SetFloatProperty(props_, vr::Prop_SecondsFromVsyncToPhotons_Float, 0.01111111f);
         vr::VRProperties()->SetBoolProperty(props_, vr::Prop_IsOnDesktop_Bool, false);
         vr::VRProperties()->SetUint64Property(props_, vr::Prop_CurrentUniverseId_Uint64, 2);
+        vr::VRProperties()->SetBoolProperty(props_, vr::Prop_HasDriverDirectModeComponent_Bool, true);
+        vr::VRProperties()->SetBoolProperty(props_, vr::Prop_DriverDirectModeSendsVsyncEvents_Bool, false);
+        if (!directMode_.InitializeGraphicsIdentity()) {
+            vr::VRDriverLog()->Log("Direct Mode graphics adapter initialization failed");
+            return vr::VRInitError_Driver_Failed;
+        }
+        vr::VRProperties()->SetUint64Property(props_, vr::Prop_GraphicsAdapterLuid_Uint64,
+                                              directMode_.AdapterLuid());
         active_ = true;
-        vr::VRDriverLog()->Log("Virtual HMD activated");
+        vr::VRDriverLog()->Log("Direct Mode HMD activated");
         return vr::VRInitError_None;
     }
 
     void Deactivate() override { active_ = false; index_ = vr::k_unTrackedDeviceIndexInvalid; }
     void EnterStandby() override {}
     void* GetComponent(const char* componentNameAndVersion) override {
-        if (std::strcmp(componentNameAndVersion, vr::IVRDisplayComponent_Version) == 0) return &display_;
+        if (componentNameAndVersion &&
+            std::strcmp(componentNameAndVersion, vr::IVRDriverDirectModeComponent_Version) == 0) {
+            vr::VRDriverLog()->Log("Direct Mode component queried");
+            return static_cast<vr::IVRDriverDirectModeComponent*>(&directMode_);
+        }
         return nullptr;
     }
     void DebugRequest(const char*, char* response, uint32_t responseSize) override {
@@ -404,7 +416,7 @@ private:
     double yaw_ = 0.0, pitch_ = 0.0, logAccumulator_ = 0.0;
     HANDLE mapping_ = nullptr;
     const bigscreen_desktop_ipc::PoseState* sharedState_ = nullptr;
-    DisplayComponent display_;
+    DirectMode directMode_;
 };
 
 class Provider final : public vr::IServerTrackedDeviceProvider {
@@ -416,27 +428,17 @@ public:
         g_properties = vr::VRProperties();
         vr::VRDriverLog()->Log("Driver initialized");
         hmd_ = new VirtualHmd();
-        displayRedirect_ = new VirtualDisplay();
         if (!vr::VRServerDriverHost()->TrackedDeviceAdded("BigscreenDesktopHMD", vr::TrackedDeviceClass_HMD, hmd_)) {
             delete hmd_; hmd_ = nullptr;
-            delete displayRedirect_; displayRedirect_ = nullptr;
             vr::VRDriverLog()->Log("Virtual HMD registration failed");
             return vr::VRInitError_Driver_Failed;
         }
         vr::VRDriverLog()->Log("Virtual HMD registered");
-        if (!vr::VRServerDriverHost()->TrackedDeviceAdded("BigscreenDesktopDisplayRedirect",
-                vr::TrackedDeviceClass_DisplayRedirect, displayRedirect_)) {
-            delete displayRedirect_; displayRedirect_ = nullptr;
-            vr::VRDriverLog()->Log("Virtual DisplayRedirect registration failed");
-            return vr::VRInitError_Driver_Failed;
-        }
-        vr::VRDriverLog()->Log("Virtual DisplayRedirect registered");
         lastTick_ = GetTickCount64();
         return vr::VRInitError_None;
     }
     void Cleanup() override {
         delete hmd_; hmd_ = nullptr;
-        delete displayRedirect_; displayRedirect_ = nullptr;
         VR_CLEANUP_SERVER_DRIVER_CONTEXT();
         g_host = nullptr; g_input = nullptr; g_properties = nullptr;
         vr::VRDriverLog()->Log("Driver shutdown");
@@ -453,7 +455,6 @@ public:
     void LeaveStandby() override {}
 private:
     VirtualHmd* hmd_ = nullptr;
-    VirtualDisplay* displayRedirect_ = nullptr;
     ULONGLONG lastTick_ = 0;
 };
 

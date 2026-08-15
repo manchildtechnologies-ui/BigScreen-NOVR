@@ -2,6 +2,5 @@
   "alwaysActivate": true,
   "name": "bigscreen_desktop",
   "resourceOnly": false,
-  "redirectsDisplay": true,
   "hmd_presence": ["*.*"]
 }
