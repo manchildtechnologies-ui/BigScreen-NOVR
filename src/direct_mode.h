@@ -2,8 +2,16 @@
 
 #include <Windows.h>
 #include <cstdint>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 #include "openvr_driver.h"
+
+struct ID3D11Device;
+struct ID3D11Texture2D;
+struct IDXGIAdapter1;
 
 class DirectMode final : public vr::IVRDriverDirectModeComponent {
 public:
@@ -27,11 +35,30 @@ public:
     void GetFrameTiming(vr::DriverDirectMode_FrameTiming* timing) override;
 
 private:
-    void LogOnce(bool& flag, const char* message);
+    struct TextureSet {
+        uint32_t pid = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t format = 0;
+        uint32_t sampleCount = 0;
+        uint32_t bindFlags = 0;
+        uint32_t miscFlags = 0;
+        uint32_t nextIndex = 0;
+        vr::SharedTextureHandle_t handles[3]{};
+        ID3D11Texture2D* textures[3]{};
 
-    struct IDXGIAdapter1* adapter_ = nullptr;
-    void* d3dDevice_ = nullptr;
+        ~TextureSet();
+    };
+
+    void LogOnce(bool& flag, const char* message);
+    void ReleaseAllTextureSets();
+
+    IDXGIAdapter1* adapter_ = nullptr;
+    ID3D11Device* d3dDevice_ = nullptr;
     uint64_t adapterLuid_ = 0;
+    std::mutex textureMutex_;
+    std::vector<std::unique_ptr<TextureSet>> textureSets_;
+    std::unordered_map<vr::SharedTextureHandle_t, TextureSet*> handleIndex_;
     bool loggedCreate_ = false;
     bool loggedDestroy_ = false;
     bool loggedDestroyAll_ = false;
