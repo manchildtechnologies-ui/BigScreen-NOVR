@@ -325,6 +325,10 @@ public:
     void EnterStandby() override {}
     void* GetComponent(const char* componentNameAndVersion) override {
         if (componentNameAndVersion &&
+            std::strcmp(componentNameAndVersion, vr::IVRDisplayComponent_Version) == 0) {
+            return &display_;
+        }
+        if (componentNameAndVersion &&
             std::strcmp(componentNameAndVersion, vr::IVRDriverDirectModeComponent_Version) == 0) {
             vr::VRDriverLog()->Log("Direct Mode component queried");
             return static_cast<vr::IVRDriverDirectModeComponent*>(&directMode_);
@@ -417,6 +421,7 @@ private:
     HANDLE mapping_ = nullptr;
     const bigscreen_desktop_ipc::PoseState* sharedState_ = nullptr;
     DirectMode directMode_;
+    DisplayComponent display_;
 };
 
 class Provider final : public vr::IServerTrackedDeviceProvider {
