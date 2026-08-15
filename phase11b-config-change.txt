@@ -1,0 +1,15 @@
+Phase 11B discovery correction
+
+Before:
+  hmd_presence = ["driver_bigscreen_desktop.dll"]
+
+After:
+  hmd_presence = ["*.*"]
+
+Reason:
+  Valve's OpenVR manifest contract defines hmd_presence as VID.PID patterns;
+  *.* is the documented always-present pattern. The previous value caused the
+  client-side HmdNotFound gate before vrserver loaded the driver.
+
+No SteamVR user setting, Valve driver, SteamVR binary, or Virtual Display
+source was changed.
