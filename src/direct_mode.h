@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -8,6 +9,19 @@
 #include <vector>
 
 #include "openvr_driver.h"
+
+static_assert(sizeof(vr::SharedTextureHandle_t) == 8, "Unexpected OpenVR shared handle ABI");
+static_assert(sizeof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t) == 152,
+              "Unexpected OpenVR SubmitLayerPerEye_t ABI");
+static_assert(alignof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t) == 8,
+              "Unexpected OpenVR SubmitLayerPerEye_t alignment");
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t, hTexture) == 0);
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t, hDepthTexture) == 8);
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t, bounds) == 16);
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t, mProjection) == 32);
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t, mHmdPose) == 96);
+static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t,
+                       flHmdPosePredictionTimeInSecondsFromNow) == 144);
 
 struct ID3D11Device;
 struct ID3D11Texture2D;
@@ -59,6 +73,13 @@ private:
     std::mutex textureMutex_;
     std::vector<std::unique_ptr<TextureSet>> textureSets_;
     std::unordered_map<vr::SharedTextureHandle_t, TextureSet*> handleIndex_;
+    struct SubmitDiagnostic {
+        vr::SharedTextureHandle_t handles[2]{};
+        uint32_t indices[2]{};
+        bool mapped[2]{};
+        vr::VRTextureBounds_t bounds[2]{};
+        float predictionSeconds[2]{};
+    } lastSubmit_;
     bool loggedCreate_ = false;
     bool loggedDestroy_ = false;
     bool loggedDestroyAll_ = false;

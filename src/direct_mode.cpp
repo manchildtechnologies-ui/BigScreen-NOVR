@@ -217,8 +217,38 @@ void DirectMode::GetNextSwapTextureSetIndex(vr::SharedTextureHandle_t handles[2]
     LogOnce(loggedNext_, "Direct Mode GetNextSwapTextureSetIndex");
 }
 
-void DirectMode::SubmitLayer(const SubmitLayerPerEye_t (&)[2]) {
-    LogOnce(loggedSubmit_, "Direct Mode SubmitLayer");
+void DirectMode::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]) {
+    SubmitDiagnostic diagnostic{};
+    {
+        std::lock_guard<std::mutex> lock(textureMutex_);
+        for (size_t eye = 0; eye < 2; ++eye) {
+            diagnostic.handles[eye] = perEye[eye].hTexture;
+            diagnostic.bounds[eye] = perEye[eye].bounds;
+            diagnostic.predictionSeconds[eye] = perEye[eye].flHmdPosePredictionTimeInSecondsFromNow;
+            const auto found = handleIndex_.find(perEye[eye].hTexture);
+            if (found != handleIndex_.end()) {
+                diagnostic.mapped[eye] = true;
+                for (uint32_t index = 0; index < 3; ++index) {
+                    if (found->second->handles[index] == perEye[eye].hTexture) {
+                        diagnostic.indices[eye] = index;
+                        break;
+                    }
+                }
+            }
+        }
+        lastSubmit_ = diagnostic;
+    }
+    if (!loggedSubmit_) {
+        loggedSubmit_ = true;
+        char line[384];
+        sprintf_s(line, "Direct Mode SubmitLayer minimal left=0x%llX idx=%u mapped=%s right=0x%llX idx=%u mapped=%s bounds=(%.3f,%.3f)-(%.3f,%.3f)",
+                  static_cast<unsigned long long>(diagnostic.handles[0]), diagnostic.indices[0],
+                  diagnostic.mapped[0] ? "yes" : "no",
+                  static_cast<unsigned long long>(diagnostic.handles[1]), diagnostic.indices[1],
+                  diagnostic.mapped[1] ? "yes" : "no", diagnostic.bounds[0].uMin, diagnostic.bounds[0].vMin,
+                  diagnostic.bounds[0].uMax, diagnostic.bounds[0].vMax);
+        vr::VRDriverLog()->Log(line);
+    }
 }
 
 void DirectMode::Present(vr::SharedTextureHandle_t) {
