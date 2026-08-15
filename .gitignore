@@ -1,0 +1,8 @@
+build/
+backups/
+*.log
+*.user
+*.suo
+*.vcxproj
+*.vcxproj.filters
+*.sln
