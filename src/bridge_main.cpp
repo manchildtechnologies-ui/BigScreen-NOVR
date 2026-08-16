@@ -396,6 +396,12 @@ public:
             if (has(winrt::Windows::Gaming::Input::GamepadButtons::View)) result.buttons |= bigscreen_desktop_controller_ipc::Button_View;
             if (has(winrt::Windows::Gaming::Input::GamepadButtons::Menu)) result.buttons |= bigscreen_desktop_controller_ipc::Button_Menu;
             result.dpad = buttons & (0x40u | 0x80u | 0x100u | 0x200u);
+            const bool a = (result.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+            if (!aReported_ || a != lastA_) {
+                std::printf("[A-TRACE] Windows.Gaming.Input A=%s\n", a ? "DOWN" : "UP");
+                lastA_ = a;
+                aReported_ = true;
+            }
             if (!readingReported_ || std::fabs(result.leftX - last_.leftX) > 0.01f ||
                 std::fabs(result.leftY - last_.leftY) > 0.01f ||
                 std::fabs(result.rightX - last_.rightX) > 0.01f ||
@@ -429,6 +435,8 @@ private:
     bool reported_ = false;
     bool readingReported_ = false;
     XboxState last_;
+    bool aReported_ = false;
+    bool lastA_ = false;
 };
 
 double ReadMouseSensitivity() {
@@ -541,6 +549,10 @@ int main() {
     }
     *controllerState = bigscreen_desktop_controller_ipc::ControllerState{};
     bigscreen_desktop_controller_ipc::Publish(controllerState, false, 0, 0, 0, 0, 0, 0, 0, 8);
+    std::printf("[A-TRACE] IPC layout size=%zu magic=0x%08X version=%u\n",
+                sizeof(bigscreen_desktop_controller_ipc::ControllerState),
+                bigscreen_desktop_controller_ipc::kMagic,
+                bigscreen_desktop_controller_ipc::kVersion);
 
     XboxHidReader xboxReader;
     xboxReader.Start();
@@ -564,6 +576,7 @@ int main() {
     double yaw = 0.0;
     double pitch = 0.0;
     uint32_t previousButtons = 0;
+    bool publishedA = false;
     ULONGLONG lastTick = GetTickCount64();
     ULONGLONG lastDisplay = 0;
     while (running) {
@@ -607,6 +620,13 @@ int main() {
         bigscreen_desktop_controller_ipc::Publish(controllerState, xbox.connected,
                                                   xbox.leftX, xbox.leftY, xbox.rightX, xbox.rightY,
                                                   xbox.leftTrigger, xbox.rightTrigger, xbox.buttons, xbox.dpad);
+        const bool currentA = (xbox.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+        if (currentA != publishedA) {
+            std::printf("[A-TRACE] IPC publish A=%s connected=%s sequence=%ld\n",
+                        currentA ? "DOWN" : "UP", xbox.connected ? "yes" : "no",
+                        controllerState->sequence);
+            publishedA = currentA;
+        }
 
         if (now - lastDisplay >= 250) {
             PrintStatus(yaw, pitch, true, mouseLookActive, mouseSensitivity, xbox);

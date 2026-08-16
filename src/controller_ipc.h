@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstddef>
 #include <cstdint>
 
 namespace bigscreen_desktop_controller_ipc {
@@ -36,6 +37,10 @@ struct ControllerState {
     uint32_t buttons = 0;
     uint32_t dpad = 8;
 };
+
+static_assert(sizeof(ControllerState) == 48, "ControllerState ABI size changed");
+static_assert(offsetof(ControllerState, sequence) == 8, "ControllerState sequence offset changed");
+static_assert(offsetof(ControllerState, buttons) == 40, "ControllerState buttons offset changed");
 
 inline void Publish(ControllerState* state, bool connected, float leftX, float leftY,
                     float rightX, float rightY, float leftTrigger, float rightTrigger,

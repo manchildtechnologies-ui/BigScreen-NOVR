@@ -440,17 +440,41 @@ public:
         vr::VRProperties()->SetStringProperty(props_, vr::Prop_InputProfilePath_String,
                                               "{htc}/input/vive_controller_profile.json");
 
-        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trigger/click", &triggerClick_);
-        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trigger/value", &triggerValue_,
-                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedOneSided);
-        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trigger/touch", &triggerTouch_);
-        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/application_menu/click", &menuClick_);
-        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trackpad/x", &trackpadX_,
-                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
-        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trackpad/y", &trackpadY_,
-                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
-        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trackpad/click", &trackpadClick_);
-        vr::VRDriverInput()->CreateHapticComponent(props_, "/output/haptic", &haptic_);
+        const auto input = vr::VRDriverInput();
+        const auto logInput = [](const char* path, vr::EVRInputError error, vr::VRInputComponentHandle_t handle) {
+            if (error != vr::VRInputError_None || handle == vr::k_ulInvalidInputComponentHandle) {
+                char message[256]{};
+                std::snprintf(message, sizeof(message), "Synthetic controller input component failed path=%s error=%d handle=%llu",
+                              path, static_cast<int>(error), static_cast<unsigned long long>(handle));
+                vr::VRDriverLog()->Log(message);
+            }
+        };
+        auto error = input->CreateBooleanComponent(props_, "/input/trigger/click", &triggerClick_);
+        logInput("/input/trigger/click", error, triggerClick_);
+        error = input->CreateScalarComponent(props_, "/input/trigger/value", &triggerValue_,
+                                              vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedOneSided);
+        logInput("/input/trigger/value", error, triggerValue_);
+        error = input->CreateBooleanComponent(props_, "/input/trigger/touch", &triggerTouch_);
+        logInput("/input/trigger/touch", error, triggerTouch_);
+        error = input->CreateBooleanComponent(props_, "/input/application_menu/click", &menuClick_);
+        logInput("/input/application_menu/click", error, menuClick_);
+        error = input->CreateScalarComponent(props_, "/input/trackpad/x", &trackpadX_,
+                                              vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
+        logInput("/input/trackpad/x", error, trackpadX_);
+        error = input->CreateScalarComponent(props_, "/input/trackpad/y", &trackpadY_,
+                                              vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
+        logInput("/input/trackpad/y", error, trackpadY_);
+        error = input->CreateBooleanComponent(props_, "/input/trackpad/click", &trackpadClick_);
+        logInput("/input/trackpad/click", error, trackpadClick_);
+        error = input->CreateHapticComponent(props_, "/output/haptic", &haptic_);
+        logInput("/output/haptic", error, haptic_);
+        char layout[256]{};
+        std::snprintf(layout, sizeof(layout), "Synthetic controller IPC layout size=%zu magic=0x%08X version=%u triggerHandle=%llu",
+                      sizeof(bigscreen_desktop_controller_ipc::ControllerState),
+                      bigscreen_desktop_controller_ipc::kMagic,
+                      bigscreen_desktop_controller_ipc::kVersion,
+                      static_cast<unsigned long long>(triggerClick_));
+        vr::VRDriverLog()->Log(layout);
         active_ = true;
         vr::VRDriverLog()->Log("Synthetic right controller activated");
         return vr::VRInitError_None;
@@ -531,10 +555,23 @@ private:
                     CloseHandle(mapping_);
                     mapping_ = nullptr;
                 }
+                else {
+                    vr::VRDriverLog()->Log("Synthetic controller IPC mapping opened");
+                }
             }
         }
-        if (!state_ || !bigscreen_desktop_controller_ipc::Read(state_, out)) return false;
-        return out.connected != 0;
+        if (!state_) return false;
+        if (!bigscreen_desktop_controller_ipc::Read(state_, out)) return false;
+        const bool connected = out.connected != 0;
+        const bool a = connected && (out.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+        if (a != lastReadA_) {
+            char message[256]{};
+            std::snprintf(message, sizeof(message), "[A-TRACE] Driver IPC read A=%s connected=%s sequence=%ld",
+                          a ? "DOWN" : "UP", connected ? "yes" : "no", out.sequence);
+            vr::VRDriverLog()->Log(message);
+            lastReadA_ = a;
+        }
+        return connected;
     }
 
     void ReadHmdPose(double& yaw, double& pitch, bool& active) {
@@ -569,6 +606,7 @@ private:
     vr::DriverPose_t pose_{};
     bool active_ = false;
     bool lastA_ = false;
+    bool lastReadA_ = false;
     vr::VRInputComponentHandle_t triggerClick_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t triggerValue_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t triggerTouch_ = vr::k_ulInvalidInputComponentHandle;
