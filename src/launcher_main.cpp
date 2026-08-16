@@ -121,8 +121,8 @@ void Paint(HDC dc) {
     RoundBox(dc, RECT{24, 20, 58, 54}, RGB(18, 126, 224), RGB(60, 190, 255), 5);
     DrawTextAt(dc, L"B", 24, 18, 34, 38, 25, FW_BOLD, RGB(240, 250, 255), DT_CENTER | DT_VCENTER);
     DrawTextAt(dc, L"Bigscreen Desktop", 76, 18, 420, 38, 24, FW_NORMAL, RGB(232, 239, 250), DT_LEFT | DT_VCENTER);
-    DrawTextAt(dc, L"—", g_minButton.left, 12, 35, 35, 22, FW_NORMAL, RGB(160, 178, 200), DT_CENTER | DT_VCENTER);
-    DrawTextAt(dc, L"×", g_closeButton.left, 8, 38, 40, 30, FW_NORMAL, RGB(160, 178, 200), DT_CENTER | DT_VCENTER);
+    DrawTextAt(dc, L"\u2014", g_minButton.left, 12, 35, 35, 22, FW_NORMAL, RGB(160, 178, 200), DT_CENTER | DT_VCENTER);
+    DrawTextAt(dc, L"\u00D7", g_closeButton.left, 8, 38, 40, 30, FW_NORMAL, RGB(160, 178, 200), DT_CENTER | DT_VCENTER);
 
     DrawTextAt(dc, L"BIGSCREEN", 0, 102, client.right, 65, 52, FW_BOLD, RGB(244, 247, 253), DT_CENTER | DT_VCENTER);
     DrawTextAt(dc, L"DESKTOP BRIDGE", 0, 166, client.right, 42, 25, FW_BOLD, RGB(35, 175, 255), DT_CENTER | DT_VCENTER);
@@ -140,12 +140,12 @@ void Paint(HDC dc) {
     const COLORREF buttonFill = g_viewerEnabled ? RGB(17, 104, 210) : RGB(28, 58, 84);
     const COLORREF buttonBorder = g_viewerEnabled ? RGB(42, 205, 255) : RGB(45, 80, 106);
     RoundBox(dc, g_viewerButton, buttonFill, buttonBorder, 18);
-    DrawTextAt(dc, L"▶", 76, 515, 48, 48, 27, FW_BOLD, RGB(245, 250, 255), DT_CENTER | DT_VCENTER);
+    DrawTextAt(dc, L"\u25B6", 76, 515, 48, 48, 27, FW_BOLD, RGB(245, 250, 255), DT_CENTER | DT_VCENTER);
     DrawTextAt(dc, L"OPEN VIEWER", 132, 514, 265, 50, 22, FW_BOLD,
                g_viewerEnabled ? RGB(255, 255, 255) : RGB(160, 180, 198), DT_CENTER | DT_VCENTER);
 
     RoundBox(dc, RECT{462, 500, client.right - 45, 580}, RGB(5, 25, 46), RGB(18, 80, 132), 18);
-    DrawTextAt(dc, g_viewerEnabled ? L"✓" : L"•", 484, 515, 45, 45, 30, FW_BOLD,
+    DrawTextAt(dc, g_viewerEnabled ? L"\u2713" : L"\u2022", 484, 515, 45, 45, 30, FW_BOLD,
                g_viewerEnabled ? RGB(50, 220, 140) : RGB(80, 150, 190), DT_CENTER | DT_VCENTER);
     DrawTextAt(dc, g_viewerEnabled ? L"When ready, start Bigscreen normally." : L"Waiting for SteamVR...",
                540, 516, client.right - 600, 40, 16, FW_NORMAL, RGB(222, 234, 247), DT_LEFT | DT_VCENTER);
