@@ -35,6 +35,7 @@ constexpr double kDefaultMouseSensitivity = 0.0025;
 constexpr float kControllerDeadzone = 0.15f;
 constexpr double kXboxRightStickYawRate = 2.4;
 constexpr double kXboxRightStickPitchRate = 2.0;
+constexpr double kXboxWalkSpeedMetersPerSecond = 1.75;
 
 struct XboxState {
     bool connected = false;
@@ -76,6 +77,20 @@ float ApplyControllerDeadzone(float value) {
     if (magnitude <= kControllerDeadzone) return 0.0f;
     const float remapped = (magnitude - kControllerDeadzone) / (1.0f - kControllerDeadzone);
     return std::copysign(remapped, value);
+}
+
+void ApplyRadialDeadzone(float x, float y, float& outX, float& outY) {
+    const float magnitude = std::sqrt(x * x + y * y);
+    if (magnitude <= kControllerDeadzone) {
+        outX = 0.0f;
+        outY = 0.0f;
+        return;
+    }
+    const float remapped = std::min(1.0f, (magnitude - kControllerDeadzone) /
+                                             (1.0f - kControllerDeadzone));
+    const float scale = remapped / magnitude;
+    outX = x * scale;
+    outY = y * scale;
 }
 
 class XboxHidReader final {
@@ -309,7 +324,9 @@ private:
             lastA_ = hidA;
             aReported_ = true;
         }
-        if (reportCount_ == 1 || std::fabs(next.rightX - previous.rightX) > 0.02f ||
+        if (reportCount_ == 1 || std::fabs(next.leftX - previous.leftX) > 0.02f ||
+            std::fabs(next.leftY - previous.leftY) > 0.02f ||
+            std::fabs(next.rightX - previous.rightX) > 0.02f ||
             std::fabs(next.rightY - previous.rightY) > 0.02f || next.buttons != previous.buttons) {
             std::printf("Xbox raw report bytes=%lu RX=%+.3f RY=%+.3f LX=%+.3f LY=%+.3f "
                         "LT=%.3f RT=%.3f buttons=0x%03X dpad=%u\n",
@@ -584,7 +601,7 @@ int main() {
     }
 
     *state = PoseState{};
-    Publish(state, 0.0, 0.0, true);
+    Publish(state, 0.0, 0.0, 0.0, 0.0, true);
 
     HANDLE controllerMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                                    0, static_cast<DWORD>(sizeof(bigscreen_desktop_controller_ipc::ControllerState)),
@@ -632,6 +649,8 @@ int main() {
     bool mouseLookActive = false;
     double yaw = 0.0;
     double pitch = 0.0;
+    double positionX = 0.0;
+    double positionZ = 0.0;
     uint32_t previousButtons = 0;
     bool publishedA = false;
     ULONGLONG lastTick = GetTickCount64();
@@ -662,25 +681,44 @@ int main() {
         XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
         if (hidXbox.connected) {
             xbox.connected = true;
+            xbox.leftX = hidXbox.leftX;
+            xbox.leftY = hidXbox.leftY;
             xbox.rightX = hidXbox.rightX;
             xbox.rightY = hidXbox.rightY;
             xbox.buttons = (xbox.buttons & ~bigscreen_desktop_controller_ipc::Button_A) |
                            (hidXbox.buttons & bigscreen_desktop_controller_ipc::Button_A);
         }
-        const float rightX = ApplyControllerDeadzone(xbox.rightX);
-        const float rightY = ApplyControllerDeadzone(xbox.rightY);
+        float rightX = 0.0f;
+        float rightY = 0.0f;
+        ApplyRadialDeadzone(xbox.rightX, xbox.rightY, rightX, rightY);
         if (xbox.connected) {
-            yaw += static_cast<double>(rightX) * kXboxRightStickYawRate * dt;
+            // HID horizontal polarity is opposite the desired look direction.
+            yaw -= static_cast<double>(rightX) * kXboxRightStickYawRate * dt;
             pitch -= static_cast<double>(rightY) * kXboxRightStickPitchRate * dt;
             if ((xbox.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) &&
                 !(previousButtons & bigscreen_desktop_controller_ipc::Button_RightStick)) {
                 yaw = 0.0;
                 pitch = 0.0;
             }
+
+            float leftX = 0.0f;
+            float leftY = 0.0f;
+            ApplyRadialDeadzone(xbox.leftX, xbox.leftY, leftX, leftY);
+            // Match the driver's OpenVR yaw quaternion: local -Z is view-forward
+            // and local +X is view-right on the horizontal plane.
+            const double forwardX = -std::sin(yaw);
+            const double forwardZ = -std::cos(yaw);
+            const double rightDirectionX = std::cos(yaw);
+            const double rightDirectionZ = -std::sin(yaw);
+            const double distance = kXboxWalkSpeedMetersPerSecond * dt;
+            positionX += (forwardX * static_cast<double>(-leftY) +
+                          rightDirectionX * static_cast<double>(leftX)) * distance;
+            positionZ += (forwardZ * static_cast<double>(-leftY) +
+                          rightDirectionZ * static_cast<double>(leftX)) * distance;
         }
         previousButtons = xbox.buttons;
         pitch = std::clamp(pitch, -kPitchLimit, kPitchLimit);
-        Publish(state, yaw, pitch, running);
+        Publish(state, positionX, positionZ, yaw, pitch, running);
         bigscreen_desktop_controller_ipc::Publish(controllerState, xbox.connected,
                                                   xbox.leftX, xbox.leftY, xbox.rightX, xbox.rightY,
                                                   xbox.leftTrigger, xbox.rightTrigger, xbox.buttons, xbox.dpad);
@@ -699,7 +737,7 @@ int main() {
         Sleep(10);
     }
 
-    Publish(state, yaw, pitch, false);
+    Publish(state, positionX, positionZ, yaw, pitch, false);
     bigscreen_desktop_controller_ipc::Publish(controllerState, false, 0, 0, 0, 0, 0, 0, 0, 8);
     xboxReader.Stop();
     std::printf("\nBridge exited.\n");

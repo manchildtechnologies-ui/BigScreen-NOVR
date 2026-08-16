@@ -304,6 +304,12 @@ void UpdateMetrics() {
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     if (message == WM_SIZE) ResizeSwapChain(LOWORD(lParam), HIWORD(lParam));
+    if (message == WM_NCHITTEST) {
+        // The viewer is display-only, so let the rendered client area act as
+        // a drag surface even when the title bar is outside the visible crop.
+        const LRESULT hit = DefWindowProc(hwnd, message, wParam, lParam);
+        return hit == HTCLIENT ? HTCAPTION : hit;
+    }
     if (message == WM_DESTROY) {
         PostQuitMessage(0);
         return 0;
@@ -328,6 +334,9 @@ int main() {
         ReleaseAll();
         return 2;
     }
+    ShowWindow(g_hwnd, SW_SHOWNORMAL);
+    SetWindowPos(g_hwnd, nullptr, 100, 100, 1280, 720,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     g_started = GetTickCount64();
     Log("BigscreenDesktopViewer GPU live core starting");
     MSG message{};

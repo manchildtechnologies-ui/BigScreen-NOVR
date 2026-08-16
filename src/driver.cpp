@@ -350,9 +350,13 @@ public:
         if (!active_) return;
         (void)dt;
         bool ipcActive = false;
+        double ipcPositionX = positionX_;
+        double ipcPositionZ = positionZ_;
         double ipcYaw = yaw_;
         double ipcPitch = pitch_;
-        if (ReadPoseFromIpc(ipcYaw, ipcPitch, ipcActive)) {
+        if (ReadPoseFromIpc(ipcPositionX, ipcPositionZ, ipcYaw, ipcPitch, ipcActive)) {
+            positionX_ = ipcPositionX;
+            positionZ_ = ipcPositionZ;
             yaw_ = ipcYaw;
             pitch_ = std::clamp(ipcPitch, -static_cast<double>(g_config.pitchLimit),
                                 static_cast<double>(g_config.pitchLimit));
@@ -366,9 +370,9 @@ public:
         next.poseTimeOffset = 0.0;
         next.qWorldFromDriverRotation = {1, 0, 0, 0};
         next.qDriverFromHeadRotation = {1, 0, 0, 0};
-        next.vecPosition[0] = 0.0;
+        next.vecPosition[0] = positionX_;
         next.vecPosition[1] = 1.6;
-        next.vecPosition[2] = 0.0;
+        next.vecPosition[2] = positionZ_;
         next.qRotation = QuaternionFromYawPitch(yaw_, pitch_);
         next.poseIsValid = true;
         next.willDriftInYaw = false;
@@ -384,13 +388,15 @@ public:
         if (logAccumulator_ >= g_config.logInterval) {
             logAccumulator_ = 0.0;
             char line[160];
-            sprintf_s(line, "Pose yaw=%.3f pitch=%.3f ipc=%s", yaw_, pitch_, ipcConnected_ ? "connected" : "inactive");
+            sprintf_s(line, "Pose x=%.3f z=%.3f yaw=%.3f pitch=%.3f ipc=%s",
+                      positionX_, positionZ_, yaw_, pitch_, ipcConnected_ ? "connected" : "inactive");
             vr::VRDriverLog()->Log(line);
         }
     }
 
 private:
-    bool ReadPoseFromIpc(double& yaw, double& pitch, bool& active) {
+    bool ReadPoseFromIpc(double& positionX, double& positionZ,
+                         double& yaw, double& pitch, bool& active) {
         if (!mapping_) {
             mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_ipc::kMappingName);
             if (mapping_) {
@@ -402,7 +408,8 @@ private:
                 }
             }
         }
-        if (sharedState_ && bigscreen_desktop_ipc::Read(sharedState_, yaw, pitch, active)) return true;
+        if (sharedState_ && bigscreen_desktop_ipc::Read(sharedState_, positionX, positionZ,
+                                                        yaw, pitch, active)) return true;
         active = false;
         return false;
     }
@@ -420,6 +427,7 @@ private:
     std::mutex mutex_;
     bool active_ = false;
     bool ipcConnected_ = false;
+    double positionX_ = 0.0, positionZ_ = 0.0;
     double yaw_ = 0.0, pitch_ = 0.0, logAccumulator_ = 0.0;
     HANDLE mapping_ = nullptr;
     const bigscreen_desktop_ipc::PoseState* sharedState_ = nullptr;
@@ -499,10 +507,12 @@ public:
         bigscreen_desktop_controller_ipc::ControllerState controller{};
         const bool inputActive = ReadController(controller);
 
+        double positionX = 0.0;
+        double positionZ = 0.0;
         double yaw = 0.0;
         double pitch = 0.0;
         bool hmdActive = false;
-        ReadHmdPose(yaw, pitch, hmdActive);
+        ReadHmdPose(positionX, positionZ, yaw, pitch, hmdActive);
         const vr::HmdQuaternion_t rotation = QuaternionFromYawPitch(yaw, pitch);
         const float localX = 0.30f;
         const float localY = -0.25f;
@@ -520,9 +530,9 @@ public:
         vr::DriverPose_t next{};
         next.qWorldFromDriverRotation = {1, 0, 0, 0};
         next.qDriverFromHeadRotation = {1, 0, 0, 0};
-        next.vecPosition[0] = rotatedX;
+        next.vecPosition[0] = static_cast<float>(positionX) + rotatedX;
         next.vecPosition[1] = 1.6f + rotatedY;
-        next.vecPosition[2] = rotatedZ;
+        next.vecPosition[2] = static_cast<float>(positionZ) + rotatedZ;
         next.qRotation = rotation;
         next.poseIsValid = hmdActive;
         next.result = hmdActive ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
@@ -576,7 +586,8 @@ private:
         return connected;
     }
 
-    void ReadHmdPose(double& yaw, double& pitch, bool& active) {
+    void ReadHmdPose(double& positionX, double& positionZ,
+                     double& yaw, double& pitch, bool& active) {
         if (!poseMapping_) {
             poseMapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_ipc::kMappingName);
             if (poseMapping_) {
@@ -588,7 +599,8 @@ private:
                 }
             }
         }
-        if (poseState_ && bigscreen_desktop_ipc::Read(poseState_, yaw, pitch, active)) return;
+        if (poseState_ && bigscreen_desktop_ipc::Read(poseState_, positionX, positionZ,
+                                                      yaw, pitch, active)) return;
         active = false;
     }
 
