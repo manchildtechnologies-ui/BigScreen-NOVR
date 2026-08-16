@@ -252,13 +252,15 @@ float ApplyDeadzone(SHORT value, float deadzone) {
 }
 
 vr::HmdQuaternion_t QuaternionFromYawPitch(double yaw, double pitch) {
+    // Compose world-up yaw first, then local-X pitch.  This keeps roll at zero
+    // instead of accumulating arbitrary quaternion rotations.
     const double cy = std::cos(yaw * 0.5), sy = std::sin(yaw * 0.5);
     const double cp = std::cos(pitch * 0.5), sp = std::sin(pitch * 0.5);
     vr::HmdQuaternion_t q{};
     q.w = cy * cp;
-    q.x = sy * sp;
+    q.x = cy * sp;
     q.y = sy * cp;
-    q.z = cy * sp;
+    q.z = -sy * sp;
     return q;
 }
 
