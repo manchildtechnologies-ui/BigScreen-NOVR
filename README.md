@@ -1,6 +1,4 @@
-<img width="1536" height="1024" alt="BigscreenInstaller" src="https://github.com/user-attachments/assets/36e27128-a1ea-4f02-a15e-9a40320ed2ea" />
-<img width="1569" height="1003" alt="installer" src="https://github.com/user-attachments/assets/7a6e32b5-6133-413d-ae4f-135a8aa060bc" />
-# BigscreenDesktopBridge — 
+# BigscreenDesktopBridge — Phase 7
 
 This is an isolated, reversible OpenVR server-driver prototype. It does not modify Bigscreen, SteamVR binaries, `driver_null`, or any Bigscreen files.
 

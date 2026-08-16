@@ -3,6 +3,7 @@
 #include "controller_ipc.h"
 #include "pose_ipc.h"
 #include "direct_mode.h"
+#include "bindings.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -21,9 +22,45 @@ struct Config {
 };
 
 Config g_config;
+
+uint32_t CanonicalDpadMask(uint32_t dpad) {
+    if (dpad > 7u) return dpad & (0x40u | 0x80u | 0x100u | 0x200u);
+    switch (dpad) {
+    case 0: return 0x40u;
+    case 2: return 0x200u;
+    case 4: return 0x80u;
+    case 6: return 0x100u;
+    default: return 0;
+    }
+}
+
+bool ConfiguredGamepadAction(const std::map<bigscreen_bindings::Action, bigscreen_bindings::Binding>& bindings,
+                             bigscreen_bindings::Action action,
+                             const bigscreen_desktop_controller_ipc::ControllerState& controller) {
+    const auto it = bindings.find(action);
+    if (it == bindings.end() || it->second.device != bigscreen_bindings::Device::Gamepad) return false;
+    const int code = it->second.code;
+    if (code == 4) return controller.leftTrigger > 0.5f;
+    if (code == 5) return controller.rightTrigger > 0.5f;
+    if (code >= 0x40) return (CanonicalDpadMask(controller.dpad) & static_cast<uint32_t>(code)) != 0;
+    return code >= 0 && code < 32 && (controller.buttons & (1u << code)) != 0;
+}
 vr::IVRServerDriverHost* g_host = nullptr;
 vr::IVRDriverInput* g_input = nullptr;
 vr::CVRPropertyHelpers* g_properties = nullptr;
+
+// Third-person-style camera offset, expressed in the yaw-relative world frame.
+// OpenVR view-forward is local -Z, so positive local Z places the camera behind
+// the player while preserving the existing yaw/pitch orientation.
+constexpr double kCameraBackOffsetMeters = 2.5;
+constexpr double kCameraHeightOffsetMeters = 0.9;
+constexpr double kArmAdjustRateMetersPerSecond = 0.8;
+
+void ApplyCameraOffset(double yaw, double& x, double& y, double& z) {
+    x += std::sin(yaw) * kCameraBackOffsetMeters;
+    y += kCameraHeightOffsetMeters;
+    z += std::cos(yaw) * kCameraBackOffsetMeters;
+}
 
 #if 0 // Experimental direct HID polling retained only for historical reference; Phase 7F uses IPC.
 class HidXboxInput final {
@@ -278,7 +315,8 @@ public:
         *x = eye == vr::Eye_Left ? 0 : 1080; *y = 0; *width = 1080; *height = 1200;
     }
     void GetProjectionRaw(vr::EVREye, float* left, float* right, float* top, float* bottom) override {
-        *left = -1.0f; *right = 1.0f; *top = -1.0f; *bottom = 1.0f;
+        // Wider projection for the stronger third-person-style desktop view.
+        *left = -1.3f; *right = 1.3f; *top = -1.3f; *bottom = 1.3f;
     }
     vr::DistortionCoordinates_t ComputeDistortion(vr::EVREye, float u, float v) override {
         vr::DistortionCoordinates_t result{};
@@ -370,9 +408,13 @@ public:
         next.poseTimeOffset = 0.0;
         next.qWorldFromDriverRotation = {1, 0, 0, 0};
         next.qDriverFromHeadRotation = {1, 0, 0, 0};
-        next.vecPosition[0] = positionX_;
-        next.vecPosition[1] = 1.6;
-        next.vecPosition[2] = positionZ_;
+        double cameraX = positionX_;
+        double cameraY = 1.6;
+        double cameraZ = positionZ_;
+        ApplyCameraOffset(yaw_, cameraX, cameraY, cameraZ);
+        next.vecPosition[0] = cameraX;
+        next.vecPosition[1] = cameraY;
+        next.vecPosition[2] = cameraZ;
         next.qRotation = QuaternionFromYawPitch(yaw_, pitch_);
         next.poseIsValid = true;
         next.willDriftInYaw = false;
@@ -441,6 +483,7 @@ public:
 
     vr::EVRInitError Activate(uint32_t objectId) override {
         index_ = objectId;
+        bindings_ = bigscreen_bindings::Load(bigscreen_bindings::SettingsPath());
         props_ = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
         vr::VRProperties()->SetStringProperty(props_, vr::Prop_TrackingSystemName_String, "BigscreenDesktopBridge");
         vr::VRProperties()->SetStringProperty(props_, vr::Prop_ModelNumber_String, "Bigscreen Desktop Right Controller");
@@ -469,6 +512,8 @@ public:
         logInput("/input/trigger/touch", error, triggerTouch_);
         error = input->CreateBooleanComponent(props_, "/input/application_menu/click", &menuClick_);
         logInput("/input/application_menu/click", error, menuClick_);
+        error = input->CreateBooleanComponent(props_, "/input/system/click", &systemClick_);
+        logInput("/input/system/click", error, systemClick_);
         error = input->CreateScalarComponent(props_, "/input/trackpad/x", &trackpadX_,
                                               vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
         logInput("/input/trackpad/x", error, trackpadX_);
@@ -519,8 +564,8 @@ public:
         bool hmdActive = false;
         ReadHmdPose(positionX, positionZ, yaw, pitch, hmdActive);
         const vr::HmdQuaternion_t rotation = QuaternionFromYawPitch(yaw, pitch);
-        const float localX = 0.30f;
-        const float localY = -0.25f;
+        const float localX = 0.30f + static_cast<float>(armWidthOffset_);
+        const float localY = -0.25f + static_cast<float>(armHeightOffset_);
         const float localZ = -0.40f;
         const float rotatedX = static_cast<float>((1.0 - 2.0 * rotation.y * rotation.y - 2.0 * rotation.z * rotation.z) * localX +
             (2.0 * rotation.x * rotation.y - 2.0 * rotation.z * rotation.w) * localY +
@@ -535,9 +580,13 @@ public:
         vr::DriverPose_t next{};
         next.qWorldFromDriverRotation = {1, 0, 0, 0};
         next.qDriverFromHeadRotation = {1, 0, 0, 0};
-        next.vecPosition[0] = static_cast<float>(positionX) + rotatedX;
-        next.vecPosition[1] = 1.6f + rotatedY;
-        next.vecPosition[2] = static_cast<float>(positionZ) + rotatedZ;
+        double cameraX = positionX;
+        double cameraY = 1.6;
+        double cameraZ = positionZ;
+        ApplyCameraOffset(yaw, cameraX, cameraY, cameraZ);
+        next.vecPosition[0] = static_cast<float>(cameraX) + rotatedX;
+        next.vecPosition[1] = static_cast<float>(cameraY) + rotatedY;
+        next.vecPosition[2] = static_cast<float>(cameraZ) + rotatedZ;
         next.qRotation = rotation;
         next.poseIsValid = hmdActive;
         next.result = hmdActive ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
@@ -555,6 +604,15 @@ public:
         const bool rightStick = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) != 0;
         const bool view = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_View) != 0;
         const bool menu = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_Menu) != 0;
+        const bool configuredTrigger = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrigger, controller);
+        const bool configuredGrip = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRGrip, controller);
+        const bool configuredMenu = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRMenu, controller);
+        const bool configuredTrackpad = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrackpadClick, controller);
+        const bool configuredMic = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::MicToggle, controller);
+        const bool configuredArmUp = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmUp, controller);
+        const bool configuredArmDown = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmDown, controller);
+        const bool configuredArmLeft = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmLeft, controller);
+        const bool configuredArmRight = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmRight, controller);
 
         // WGI reports D-pad bits, while HID reports the hat switch as 0..7
         // (down=4). Normalize both forms to a Vive trackpad direction.
@@ -570,28 +628,54 @@ public:
             dpadX = kHatX[controller.dpad];
             dpadY = kHatY[controller.dpad];
         }
-        const bool dpadActive = inputActive && (dpadX != 0.0f || dpadY != 0.0f);
-        const bool dpadDown = dpadActive && dpadY < -0.5f;
-        const bool trackpadPress = b || rightStick || dpadDown;
-        const bool grip = x || leftBumper || rightBumper || leftStick;
-        const bool applicationMenu = y || view || menu;
-        const float rightTrigger = inputActive ? std::clamp(controller.rightTrigger, 0.0f, 1.0f) : 0.0f;
-        vr::VRDriverInput()->UpdateBooleanComponent(triggerClick_, a, 0.0);
-        vr::VRDriverInput()->UpdateScalarComponent(triggerValue_, rightTrigger, 0.0);
-        vr::VRDriverInput()->UpdateBooleanComponent(triggerTouch_, a || rightTrigger > 0.01f, 0.0);
-        vr::VRDriverInput()->UpdateBooleanComponent(menuClick_, applicationMenu, 0.0);
-        vr::VRDriverInput()->UpdateScalarComponent(trackpadX_, dpadActive ? dpadX : 0.0, 0.0);
-        vr::VRDriverInput()->UpdateScalarComponent(trackpadY_, dpadActive ? dpadY : 0.0, 0.0);
-        vr::VRDriverInput()->UpdateBooleanComponent(trackpadClick_, trackpadPress, 0.0);
-        vr::VRDriverInput()->UpdateBooleanComponent(trackpadTouch_, dpadActive, 0.0);
-        vr::VRDriverInput()->UpdateBooleanComponent(gripClick_, grip, 0.0);
-        if (a != lastA_) {
-            vr::VRDriverLog()->Log(a ? "Synthetic controller trigger active" : "Synthetic controller trigger released");
-            lastA_ = a;
+        if (configuredArmUp || configuredArmDown || configuredArmLeft || configuredArmRight) {
+            dpadX = configuredArmLeft ? -1.0f : (configuredArmRight ? 1.0f : 0.0f);
+            dpadY = configuredArmUp ? 1.0f : (configuredArmDown ? -1.0f : 0.0f);
         }
-        if (dpadDown != lastDpadDown_) {
-            vr::VRDriverLog()->Log(dpadDown ? "Synthetic controller mic south active" : "Synthetic controller mic south released");
-            lastDpadDown_ = dpadDown;
+        const bool dpadActive = inputActive && (dpadX != 0.0f || dpadY != 0.0f);
+        if (controller.dpad != lastDpad_) {
+            char dpadMessage[160]{};
+            std::snprintf(dpadMessage, sizeof(dpadMessage),
+                          "Synthetic controller D-pad raw=0x%08X decoded=(%+.1f,%+.1f) active=%s",
+                          controller.dpad, dpadX, dpadY, dpadActive ? "yes" : "no");
+            vr::VRDriverLog()->Log(dpadMessage);
+            lastDpad_ = controller.dpad;
+        }
+        const bool rightGrip = inputActive && controller.rightTrigger > 0.5f;
+        const bool rightTriggerButton = configuredTrigger || rightBumper;
+        if (inputActive && dpadActive) {
+            armHeightOffset_ = std::clamp(armHeightOffset_ +
+                                          static_cast<double>(dpadY) * kArmAdjustRateMetersPerSecond * dt,
+                                          -0.45, 0.65);
+            // Left widens the right hand outward; right narrows the spacing.
+            armWidthOffset_ = std::clamp(armWidthOffset_ -
+                                         static_cast<double>(dpadX) * kArmAdjustRateMetersPerSecond * dt,
+                                         -0.20, 0.50);
+        }
+        // Bigscreen's Vive bindings use the trigger for normal selection, but
+        // some menu surfaces consume the trackpad-click action instead. Keep
+        // A on the proven trigger path and mirror it to trackpad click for
+        // compatibility with those surfaces.
+        const bool trackpadPress = configuredTrackpad || a || b || rightStick || leftStick;
+        const bool grip = configuredGrip || x || leftBumper || leftStick || rightGrip;
+        // Keep Xbox Menu exclusively on SteamVR's system/dashboard action;
+        // do not also send it to Bigscreen's in-game application menu.
+        const bool applicationMenu = configuredMenu || y || view;
+        const float rightTriggerPull = rightTriggerButton ? 1.0f : 0.0f;
+        vr::VRDriverInput()->UpdateBooleanComponent(triggerClick_, rightTriggerButton, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(triggerValue_, rightTriggerPull, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(triggerTouch_, rightTriggerButton, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(menuClick_, applicationMenu, 0.0);
+        // Xbox Menu (three lines) is the SteamVR system/dashboard toggle.
+        vr::VRDriverInput()->UpdateBooleanComponent(systemClick_, menu, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(trackpadX_, 0.0, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(trackpadY_, (configuredMic || leftStick) ? -1.0 : 0.0, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(trackpadClick_, trackpadPress, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(trackpadTouch_, configuredMic || leftStick, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(gripClick_, grip, 0.0);
+        if (rightTriggerButton != lastA_) {
+            vr::VRDriverLog()->Log(rightTriggerButton ? "Synthetic controller trigger active" : "Synthetic controller trigger released");
+            lastA_ = rightTriggerButton;
         }
     }
 
@@ -659,12 +743,16 @@ private:
     vr::DriverPose_t pose_{};
     bool active_ = false;
     bool lastA_ = false;
-    bool lastDpadDown_ = false;
+    uint32_t lastDpad_ = 8;
     bool lastReadA_ = false;
+    double armHeightOffset_ = 0.0;
+    double armWidthOffset_ = 0.0;
+    std::map<bigscreen_bindings::Action, bigscreen_bindings::Binding> bindings_;
     vr::VRInputComponentHandle_t triggerClick_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t triggerValue_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t triggerTouch_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t menuClick_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t systemClick_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t trackpadX_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t trackpadY_ = vr::k_ulInvalidInputComponentHandle;
     vr::VRInputComponentHandle_t trackpadClick_ = vr::k_ulInvalidInputComponentHandle;
