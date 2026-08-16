@@ -1,5 +1,6 @@
 #include <openvr_driver.h>
 #include <Windows.h>
+#include "controller_ipc.h"
 #include "pose_ipc.h"
 #include "direct_mode.h"
 #include <algorithm>
@@ -424,6 +425,164 @@ private:
     DisplayComponent display_;
 };
 
+class SyntheticRightController final : public vr::ITrackedDeviceServerDriver {
+public:
+    ~SyntheticRightController() { CloseIpc(); }
+
+    vr::EVRInitError Activate(uint32_t objectId) override {
+        index_ = objectId;
+        props_ = vr::VRProperties()->TrackedDeviceToPropertyContainer(objectId);
+        vr::VRProperties()->SetStringProperty(props_, vr::Prop_TrackingSystemName_String, "BigscreenDesktopBridge");
+        vr::VRProperties()->SetStringProperty(props_, vr::Prop_ModelNumber_String, "Bigscreen Desktop Right Controller");
+        vr::VRProperties()->SetStringProperty(props_, vr::Prop_ManufacturerName_String, "BigscreenDesktopBridge");
+        vr::VRProperties()->SetInt32Property(props_, vr::Prop_ControllerRoleHint_Int32, vr::TrackedControllerRole_RightHand);
+        vr::VRProperties()->SetStringProperty(props_, vr::Prop_ControllerType_String, "vive_controller");
+        vr::VRProperties()->SetStringProperty(props_, vr::Prop_InputProfilePath_String,
+                                              "{htc}/input/vive_controller_profile.json");
+
+        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trigger/click", &triggerClick_);
+        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trigger/value", &triggerValue_,
+                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedOneSided);
+        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trigger/touch", &triggerTouch_);
+        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/application_menu/click", &menuClick_);
+        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trackpad/x", &trackpadX_,
+                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
+        vr::VRDriverInput()->CreateScalarComponent(props_, "/input/trackpad/y", &trackpadY_,
+                                                   vr::VRScalarType_Absolute, vr::VRScalarUnits_NormalizedTwoSided);
+        vr::VRDriverInput()->CreateBooleanComponent(props_, "/input/trackpad/click", &trackpadClick_);
+        vr::VRDriverInput()->CreateHapticComponent(props_, "/output/haptic", &haptic_);
+        active_ = true;
+        vr::VRDriverLog()->Log("Synthetic right controller activated");
+        return vr::VRInitError_None;
+    }
+
+    void Deactivate() override {
+        active_ = false;
+        index_ = vr::k_unTrackedDeviceIndexInvalid;
+    }
+    void EnterStandby() override {}
+    void* GetComponent(const char*) override { return nullptr; }
+    void DebugRequest(const char*, char* response, uint32_t responseSize) override {
+        if (responseSize) response[0] = '\0';
+    }
+    vr::DriverPose_t GetPose() override { return pose_; }
+
+    void RunFrame(double dt) {
+        if (!active_) return;
+        (void)dt;
+        bigscreen_desktop_controller_ipc::ControllerState controller{};
+        const bool inputActive = ReadController(controller);
+
+        double yaw = 0.0;
+        double pitch = 0.0;
+        bool hmdActive = false;
+        ReadHmdPose(yaw, pitch, hmdActive);
+        const vr::HmdQuaternion_t rotation = QuaternionFromYawPitch(yaw, pitch);
+        const float localX = 0.30f;
+        const float localY = -0.25f;
+        const float localZ = -0.40f;
+        const float rotatedX = static_cast<float>((1.0 - 2.0 * rotation.y * rotation.y - 2.0 * rotation.z * rotation.z) * localX +
+            (2.0 * rotation.x * rotation.y - 2.0 * rotation.z * rotation.w) * localY +
+            (2.0 * rotation.x * rotation.z + 2.0 * rotation.y * rotation.w) * localZ);
+        const float rotatedY = static_cast<float>((2.0 * rotation.x * rotation.y + 2.0 * rotation.z * rotation.w) * localX +
+            (1.0 - 2.0 * rotation.x * rotation.x - 2.0 * rotation.z * rotation.z) * localY +
+            (2.0 * rotation.y * rotation.z - 2.0 * rotation.x * rotation.w) * localZ);
+        const float rotatedZ = static_cast<float>((2.0 * rotation.x * rotation.z - 2.0 * rotation.y * rotation.w) * localX +
+            (2.0 * rotation.y * rotation.z + 2.0 * rotation.x * rotation.w) * localY +
+            (1.0 - 2.0 * rotation.x * rotation.x - 2.0 * rotation.y * rotation.y) * localZ);
+
+        vr::DriverPose_t next{};
+        next.qWorldFromDriverRotation = {1, 0, 0, 0};
+        next.qDriverFromHeadRotation = {1, 0, 0, 0};
+        next.vecPosition[0] = rotatedX;
+        next.vecPosition[1] = 1.6f + rotatedY;
+        next.vecPosition[2] = rotatedZ;
+        next.qRotation = rotation;
+        next.poseIsValid = hmdActive;
+        next.result = hmdActive ? vr::TrackingResult_Running_OK : vr::TrackingResult_Uninitialized;
+        next.deviceIsConnected = inputActive;
+        pose_ = next;
+        if (g_host) g_host->TrackedDevicePoseUpdated(index_, pose_, sizeof(pose_));
+
+        const bool a = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+        const bool b = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_B) != 0;
+        const bool rightStick = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) != 0;
+        vr::VRDriverInput()->UpdateBooleanComponent(triggerClick_, a, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(triggerValue_, a ? 1.0 : 0.0, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(triggerTouch_, a, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(menuClick_, b, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(trackpadX_, 0.0, 0.0);
+        vr::VRDriverInput()->UpdateScalarComponent(trackpadY_, 0.0, 0.0);
+        vr::VRDriverInput()->UpdateBooleanComponent(trackpadClick_, rightStick, 0.0);
+        if (a != lastA_) {
+            vr::VRDriverLog()->Log(a ? "Synthetic controller trigger active" : "Synthetic controller trigger released");
+            lastA_ = a;
+        }
+    }
+
+private:
+    bool ReadController(bigscreen_desktop_controller_ipc::ControllerState& out) {
+        if (!mapping_) {
+            mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_controller_ipc::kMappingName);
+            if (mapping_) {
+                state_ = static_cast<const bigscreen_desktop_controller_ipc::ControllerState*>(
+                    MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, sizeof(bigscreen_desktop_controller_ipc::ControllerState)));
+                if (!state_) {
+                    CloseHandle(mapping_);
+                    mapping_ = nullptr;
+                }
+            }
+        }
+        if (!state_ || !bigscreen_desktop_controller_ipc::Read(state_, out)) return false;
+        return out.connected != 0;
+    }
+
+    void ReadHmdPose(double& yaw, double& pitch, bool& active) {
+        if (!poseMapping_) {
+            poseMapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_ipc::kMappingName);
+            if (poseMapping_) {
+                poseState_ = static_cast<const bigscreen_desktop_ipc::PoseState*>(
+                    MapViewOfFile(poseMapping_, FILE_MAP_READ, 0, 0, sizeof(bigscreen_desktop_ipc::PoseState)));
+                if (!poseState_) {
+                    CloseHandle(poseMapping_);
+                    poseMapping_ = nullptr;
+                }
+            }
+        }
+        if (poseState_ && bigscreen_desktop_ipc::Read(poseState_, yaw, pitch, active)) return;
+        active = false;
+    }
+
+    void CloseIpc() {
+        if (state_) UnmapViewOfFile(state_);
+        if (mapping_) CloseHandle(mapping_);
+        if (poseState_) UnmapViewOfFile(poseState_);
+        if (poseMapping_) CloseHandle(poseMapping_);
+        state_ = nullptr;
+        mapping_ = nullptr;
+        poseState_ = nullptr;
+        poseMapping_ = nullptr;
+    }
+
+    uint32_t index_ = vr::k_unTrackedDeviceIndexInvalid;
+    vr::PropertyContainerHandle_t props_ = vr::k_ulInvalidPropertyContainer;
+    vr::DriverPose_t pose_{};
+    bool active_ = false;
+    bool lastA_ = false;
+    vr::VRInputComponentHandle_t triggerClick_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t triggerValue_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t triggerTouch_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t menuClick_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t trackpadX_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t trackpadY_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t trackpadClick_ = vr::k_ulInvalidInputComponentHandle;
+    vr::VRInputComponentHandle_t haptic_ = vr::k_ulInvalidInputComponentHandle;
+    HANDLE mapping_ = nullptr;
+    const bigscreen_desktop_controller_ipc::ControllerState* state_ = nullptr;
+    HANDLE poseMapping_ = nullptr;
+    const bigscreen_desktop_ipc::PoseState* poseState_ = nullptr;
+};
+
 class Provider final : public vr::IServerTrackedDeviceProvider {
 public:
     vr::EVRInitError Init(vr::IVRDriverContext* context) override {
@@ -439,10 +598,19 @@ public:
             return vr::VRInitError_Driver_Failed;
         }
         vr::VRDriverLog()->Log("Virtual HMD registered");
+        controller_ = new SyntheticRightController();
+        if (!vr::VRServerDriverHost()->TrackedDeviceAdded("BigscreenDesktopRightController",
+                                                           vr::TrackedDeviceClass_Controller, controller_)) {
+            delete controller_; controller_ = nullptr;
+            vr::VRDriverLog()->Log("Synthetic right controller registration failed");
+            return vr::VRInitError_Driver_Failed;
+        }
+        vr::VRDriverLog()->Log("Synthetic right controller registered");
         lastTick_ = GetTickCount64();
         return vr::VRInitError_None;
     }
     void Cleanup() override {
+        delete controller_; controller_ = nullptr;
         delete hmd_; hmd_ = nullptr;
         VR_CLEANUP_SERVER_DRIVER_CONTEXT();
         g_host = nullptr; g_input = nullptr; g_properties = nullptr;
@@ -454,12 +622,14 @@ public:
         const double dt = std::clamp(static_cast<double>(now - lastTick_) / 1000.0, 0.0, 0.1);
         lastTick_ = now;
         if (hmd_) hmd_->RunFrame(dt);
+        if (controller_) controller_->RunFrame(dt);
     }
     bool ShouldBlockStandbyMode() override { return false; }
     void EnterStandby() override {}
     void LeaveStandby() override {}
 private:
     VirtualHmd* hmd_ = nullptr;
+    SyntheticRightController* controller_ = nullptr;
     ULONGLONG lastTick_ = 0;
 };
 
