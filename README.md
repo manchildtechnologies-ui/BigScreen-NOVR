@@ -1,13 +1,13 @@
 # Bigscreen Desktop Bridge
 
-Use Bigscreen on a Windows monitor without a physical VR headset. The project
+Use Bigscreen on a Windows monitor without a physical VR headset. This project
 provides a synthetic SteamVR HMD, Xbox controller input, a synthetic right-hand
 controller, and a desktop viewer for the live Bigscreen frame.
 
 ## Download for friends
 
-Download the ZIP from the repository's **Releases** page. Extract it and run
-`BigscreenDesktopInstaller.exe`. The installer creates the **Start Bigscreen
+Download the ZIP from the repository's **Releases** page, extract it, and run
+`BigscreenDesktopInstaller.exe`. The installer creates **Start Bigscreen
 Desktop** and **Uninstall Bigscreen Desktop Bridge** shortcuts.
 
 ## Requirements
@@ -17,9 +17,9 @@ Desktop** and **Uninstall Bigscreen Desktop Bridge** shortcuts.
 - Bluetooth Xbox Wireless Controller paired in Windows
 - DirectX 11-capable graphics driver
 
-No physical VR headset is required. The custom SteamVR driver is installed in
-SteamVR's protected driver directory, so Windows asks for administrator
-permission during installation.
+No physical VR headset or separate Visual C++ runtime is required. The custom
+driver is installed in SteamVR's protected directory, so Windows asks for
+administrator permission during installation.
 
 ## Use
 
@@ -34,29 +34,35 @@ The bridge runs silently in the background. The viewer opens from the launcher.
 
 - Right stick: look
 - Left stick: walk and strafe
-- A: trigger / primary click
+- A: Vive trigger / primary click
 - Right trigger: analog trigger pull
-- B: trackpad / secondary click
+- B: Vive trackpad / secondary click
 - D-pad: trackpad direction; Down toggles microphone
-- X, bumpers, left-stick click: grip
-- Y, View, Menu: application/menu
+- X, bumpers, left-stick click: Vive grip
+- Y, View, Menu: Vive application/menu
 - Right-stick click: trackpad click
+
+## Uninstall
+
+Double-click **Uninstall Bigscreen Desktop Bridge**. It removes the bridge,
+viewer, launcher, shortcuts, and custom SteamVR driver. Bigscreen and SteamVR
+are left installed.
 
 ## Building from source
 
-Use Visual Studio Build Tools with the C++ workload, CMake, and an x64
-configuration. Set `OPENVR_SDK_ROOT` to an official Valve OpenVR checkout
-containing `headers/openvr_driver.h`:
+Use Visual Studio Build Tools with C++ support, CMake, and an x64 generator.
+Set `OPENVR_SDK_ROOT` to an official Valve OpenVR checkout containing
+`headers/openvr_driver.h`:
 
 ```powershell
 cmake -S . -B build -A x64 -DOPENVR_SDK_ROOT=C:\path\to\openvr
 cmake --build build --config Release
 ```
 
-OpenVR repository: https://github.com/ValveSoftware/openvr
+Official OpenVR repository: https://github.com/ValveSoftware/openvr
 
 ## Scope and licensing
 
 This repository contains the bridge and driver prototype only. It does not
-include Bigscreen, SteamVR, or Valve driver files. Review and add the project's
-chosen open-source license before publishing publicly.
+include Bigscreen, SteamVR, or Valve driver files. Add the project's chosen
+open-source license before publishing publicly.
