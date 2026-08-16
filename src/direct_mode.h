@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "openvr_driver.h"
+#include "live_frame_ipc.h"
 
 static_assert(sizeof(vr::SharedTextureHandle_t) == 8, "Unexpected OpenVR shared handle ABI");
 static_assert(sizeof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t) == 152,
@@ -72,6 +73,10 @@ private:
     bool CaptureRequested() const;
     bool WriteRawDiagnosticFrame(const TextureSet* set, uint32_t textureIndex);
     void ReleaseSyncTexture();
+    bool EnsureLiveIpc();
+    bool EnsureLiveOutput(TextureSet* set);
+    void ReleaseLiveOutput();
+    bool PublishLiveFrame(TextureSet* set, uint32_t textureIndex);
 
     IDXGIAdapter1* adapter_ = nullptr;
     ID3D11Device* d3dDevice_ = nullptr;
@@ -96,6 +101,15 @@ private:
     ID3D11Texture2D* syncTexture_ = nullptr;
     IDXGIKeyedMutex* syncMutex_ = nullptr;
     uint64_t diagnosticSequence_ = 0;
+    HANDLE liveMapping_ = nullptr;
+    bigscreen_live_frame_ipc::LiveFrameState* liveState_ = nullptr;
+    ID3D11Texture2D* liveOutput_ = nullptr;
+    IDXGIKeyedMutex* liveMutex_ = nullptr;
+    uint32_t liveWidth_ = 0;
+    uint32_t liveHeight_ = 0;
+    uint32_t liveFormat_ = 0;
+    uint64_t liveGeneration_ = 0;
+    uint64_t liveFrameSequence_ = 0;
     bool loggedCreate_ = false;
     bool loggedDestroy_ = false;
     bool loggedDestroyAll_ = false;
@@ -106,4 +120,7 @@ private:
     bool loggedTiming_ = false;
     bool loggedSync_ = false;
     bool loggedCapture_ = false;
+    bool loggedLiveIpc_ = false;
+    bool loggedLiveOutput_ = false;
+    bool loggedLiveDrop_ = false;
 };

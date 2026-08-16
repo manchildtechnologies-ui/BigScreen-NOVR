@@ -2,6 +2,7 @@
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include "live_frame_ipc.h"
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -21,6 +22,7 @@ DirectMode::DirectMode() = default;
 
 DirectMode::~DirectMode() {
     ReleaseAllTextureSets();
+    ReleaseLiveOutput();
     ReleaseSyncTexture();
     if (diagnosticStaging_) {
         diagnosticStaging_->Release();
@@ -37,6 +39,14 @@ DirectMode::~DirectMode() {
     if (adapter_) {
         adapter_->Release();
         adapter_ = nullptr;
+    }
+    if (liveState_) {
+        UnmapViewOfFile(liveState_);
+        liveState_ = nullptr;
+    }
+    if (liveMapping_) {
+        CloseHandle(liveMapping_);
+        liveMapping_ = nullptr;
     }
 }
 
@@ -95,6 +105,7 @@ bool DirectMode::InitializeGraphicsIdentity() {
             return false;
         }
         d3dDevice_ = device;
+        EnsureLiveIpc();
     }
 
     factory->Release();
@@ -343,6 +354,119 @@ void DirectMode::ReleaseSyncTexture() {
     syncHandle_ = 0;
 }
 
+bool DirectMode::EnsureLiveIpc() {
+    if (liveState_) return true;
+    liveMapping_ = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                      static_cast<DWORD>(sizeof(bigscreen_live_frame_ipc::LiveFrameState)),
+                                      bigscreen_live_frame_ipc::kMappingName);
+    if (!liveMapping_) return false;
+    liveState_ = static_cast<bigscreen_live_frame_ipc::LiveFrameState*>(MapViewOfFile(
+        liveMapping_, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(bigscreen_live_frame_ipc::LiveFrameState)));
+    if (!liveState_) {
+        CloseHandle(liveMapping_);
+        liveMapping_ = nullptr;
+        return false;
+    }
+    *liveState_ = bigscreen_live_frame_ipc::LiveFrameState{};
+    if (!loggedLiveIpc_) {
+        loggedLiveIpc_ = true;
+        vr::VRDriverLog()->Log("Direct Mode live GPU IPC mapping ready");
+    }
+    return true;
+}
+
+void DirectMode::ReleaseLiveOutput() {
+    if (liveState_) InterlockedExchange(&liveState_->valid, 0);
+    if (liveMutex_) {
+        liveMutex_->Release();
+        liveMutex_ = nullptr;
+    }
+    if (liveOutput_) {
+        liveOutput_->Release();
+        liveOutput_ = nullptr;
+    }
+    liveWidth_ = 0;
+    liveHeight_ = 0;
+    liveFormat_ = 0;
+}
+
+bool DirectMode::EnsureLiveOutput(TextureSet* set) {
+    if (!set || !d3dDevice_ || !EnsureLiveIpc()) return false;
+    if (liveOutput_ && liveWidth_ == set->width && liveHeight_ == set->height && liveFormat_ == set->format) {
+        return true;
+    }
+
+    ReleaseLiveOutput();
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = set->width;
+    desc.Height = set->height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = static_cast<DXGI_FORMAT>(set->format);
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    if (FAILED(d3dDevice_->CreateTexture2D(&desc, nullptr, &liveOutput_))) {
+        liveOutput_ = nullptr;
+        return false;
+    }
+
+    IDXGIResource* resource = nullptr;
+    HANDLE sharedHandle = nullptr;
+    HRESULT hr = liveOutput_->QueryInterface(IID_PPV_ARGS(&resource));
+    if (SUCCEEDED(hr)) hr = resource->GetSharedHandle(&sharedHandle);
+    if (resource) resource->Release();
+    if (FAILED(hr) || !sharedHandle || FAILED(liveOutput_->QueryInterface(IID_PPV_ARGS(&liveMutex_)))) {
+        ReleaseLiveOutput();
+        return false;
+    }
+
+    liveWidth_ = set->width;
+    liveHeight_ = set->height;
+    liveFormat_ = set->format;
+    ++liveGeneration_;
+    liveFrameSequence_ = 0;
+    liveState_->width = liveWidth_;
+    liveState_->height = liveHeight_;
+    liveState_->format = liveFormat_;
+    liveState_->sharedHandle = reinterpret_cast<uint64_t>(sharedHandle);
+    liveState_->adapterLuid = adapterLuid_;
+    liveState_->generation = liveGeneration_;
+    InterlockedExchange64(&liveState_->frameSequence, 0);
+    InterlockedExchange(&liveState_->valid, 1);
+
+    if (!loggedLiveOutput_) {
+        loggedLiveOutput_ = true;
+        char line[384];
+        sprintf_s(line, "Direct Mode live output created size=%ux%u format=%u handle=0x%llX generation=%llu",
+                  liveWidth_, liveHeight_, liveFormat_, static_cast<unsigned long long>(liveState_->sharedHandle),
+                  static_cast<unsigned long long>(liveGeneration_));
+        vr::VRDriverLog()->Log(line);
+    }
+    return true;
+}
+
+bool DirectMode::PublishLiveFrame(TextureSet* set, uint32_t textureIndex) {
+    if (!EnsureLiveOutput(set) || !liveOutput_ || !liveMutex_ || textureIndex >= 3 || !set->textures[textureIndex]) {
+        return false;
+    }
+    const HRESULT acquire = liveMutex_->AcquireSync(0, 0);
+    if (FAILED(acquire)) {
+        if (!loggedLiveDrop_) {
+            loggedLiveDrop_ = true;
+            vr::VRDriverLog()->Log("Direct Mode live output waiting for viewer");
+        }
+        return false;
+    }
+    d3dContext_->CopyResource(liveOutput_, set->textures[textureIndex]);
+    d3dContext_->Flush();
+    ++liveFrameSequence_;
+    InterlockedExchange64(&liveState_->frameSequence, static_cast<LONG64>(liveFrameSequence_));
+    liveMutex_->ReleaseSync(1);
+    return true;
+}
+
 void DirectMode::GetNextSwapTextureSetIndex(vr::SharedTextureHandle_t handles[2], uint32_t (*indices)[2]) {
     if (indices) {
         std::lock_guard<std::mutex> lock(textureMutex_);
@@ -395,45 +519,44 @@ void DirectMode::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]) {
 }
 
 void DirectMode::Present(vr::SharedTextureHandle_t syncTexture) {
-    if (CaptureRequested()) {
-        DeleteFileW(DiagnosticRequestPath().c_str());
-        SubmitDiagnostic left;
-        TextureSet* set = nullptr;
-        uint32_t textureIndex = 0;
-        {
-            std::lock_guard<std::mutex> lock(textureMutex_);
-            left = lastSubmit_;
-            const auto found = handleIndex_.find(left.handles[0]);
-            if (found != handleIndex_.end()) {
-                set = found->second;
-                textureIndex = left.indices[0];
-            }
+    SubmitDiagnostic left;
+    TextureSet* liveSet = nullptr;
+    uint32_t liveTextureIndex = 0;
+    {
+        std::lock_guard<std::mutex> lock(textureMutex_);
+        left = lastSubmit_;
+        const auto found = handleIndex_.find(left.handles[0]);
+        if (found != handleIndex_.end()) {
+            liveSet = found->second;
+            liveTextureIndex = left.indices[0];
         }
-        if (!set) {
-            LogOnce(loggedCapture_, "Direct Mode raw capture failed: left-eye handle unmapped");
+    }
+    if (liveSet) {
+        if (syncHandle_ != syncTexture) {
+            ReleaseSyncTexture();
+            syncHandle_ = syncTexture;
+            if (syncHandle_ && FAILED(d3dDevice_->OpenSharedResource(
+                    reinterpret_cast<HANDLE>(static_cast<uintptr_t>(syncHandle_)),
+                    IID_PPV_ARGS(&syncTexture_)))) {
+                syncTexture_ = nullptr;
+            }
+            if (syncTexture_) syncTexture_->QueryInterface(IID_PPV_ARGS(&syncMutex_));
+        }
+        if (!syncTexture_ || !syncMutex_) {
+            LogOnce(loggedSync_, "Direct Mode live output failed: sync texture has no keyed mutex");
+        } else if (SUCCEEDED(syncMutex_->AcquireSync(0, 100))) {
+            if (!loggedSync_) {
+                loggedSync_ = true;
+                vr::VRDriverLog()->Log("Direct Mode live output synchronization acquired");
+            }
+            PublishLiveFrame(liveSet, liveTextureIndex);
+            if (CaptureRequested()) {
+                DeleteFileW(DiagnosticRequestPath().c_str());
+                WriteRawDiagnosticFrame(liveSet, liveTextureIndex);
+            }
+            syncMutex_->ReleaseSync(0);
         } else {
-            if (syncHandle_ != syncTexture) {
-                ReleaseSyncTexture();
-                syncHandle_ = syncTexture;
-                if (syncHandle_ && FAILED(d3dDevice_->OpenSharedResource(
-                        reinterpret_cast<HANDLE>(static_cast<uintptr_t>(syncHandle_)),
-                        IID_PPV_ARGS(&syncTexture_)))) {
-                    syncTexture_ = nullptr;
-                }
-                if (syncTexture_) syncTexture_->QueryInterface(IID_PPV_ARGS(&syncMutex_));
-            }
-            if (!syncTexture_ || !syncMutex_) {
-                LogOnce(loggedSync_, "Direct Mode raw capture failed: sync texture has no keyed mutex");
-            } else if (SUCCEEDED(syncMutex_->AcquireSync(0, 100))) {
-                if (!loggedSync_) {
-                    loggedSync_ = true;
-                    vr::VRDriverLog()->Log("Direct Mode raw capture synchronization acquired");
-                }
-                WriteRawDiagnosticFrame(set, textureIndex);
-                syncMutex_->ReleaseSync(0);
-            } else {
-                LogOnce(loggedSync_, "Direct Mode raw capture failed: AcquireSync failed");
-            }
+            LogOnce(loggedSync_, "Direct Mode live output failed: AcquireSync failed");
         }
     }
     LogOnce(loggedPresent_, "Direct Mode Present");
