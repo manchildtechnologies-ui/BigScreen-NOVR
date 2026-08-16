@@ -67,6 +67,17 @@ add_custom_command(TARGET BigscreenDesktopViewer POST_BUILD
     "$<TARGET_FILE_DIR:BigscreenDesktopViewer>/openvr_api.dll"
 )
 
+add_executable(BigscreenFrameDump
+  src/frame_dump.cpp
+)
+target_compile_features(BigscreenFrameDump PRIVATE cxx_std_17)
+target_compile_definitions(BigscreenFrameDump PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _AMD64_ _WIN64)
+target_link_libraries(BigscreenFrameDump PRIVATE windowscodecs)
+set_target_properties(BigscreenFrameDump PROPERTIES
+  OUTPUT_NAME "BigscreenFrameDump"
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+
 add_executable(BigscreenAppDiag
   phase8-state/app_diag.cpp
 )

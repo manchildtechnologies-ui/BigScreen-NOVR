@@ -24,7 +24,9 @@ static_assert(offsetof(vr::IVRDriverDirectModeComponent::SubmitLayerPerEye_t,
                        flHmdPosePredictionTimeInSecondsFromNow) == 144);
 
 struct ID3D11Device;
+struct ID3D11DeviceContext;
 struct ID3D11Texture2D;
+struct IDXGIKeyedMutex;
 struct IDXGIAdapter1;
 
 class DirectMode final : public vr::IVRDriverDirectModeComponent {
@@ -66,9 +68,14 @@ private:
 
     void LogOnce(bool& flag, const char* message);
     void ReleaseAllTextureSets();
+    bool EnsureDiagnosticStaging(TextureSet* set);
+    bool CaptureRequested() const;
+    bool WriteRawDiagnosticFrame(const TextureSet* set, uint32_t textureIndex);
+    void ReleaseSyncTexture();
 
     IDXGIAdapter1* adapter_ = nullptr;
     ID3D11Device* d3dDevice_ = nullptr;
+    ID3D11DeviceContext* d3dContext_ = nullptr;
     uint64_t adapterLuid_ = 0;
     std::mutex textureMutex_;
     std::vector<std::unique_ptr<TextureSet>> textureSets_;
@@ -80,6 +87,15 @@ private:
         vr::VRTextureBounds_t bounds[2]{};
         float predictionSeconds[2]{};
     } lastSubmit_;
+    ID3D11Texture2D* diagnosticStaging_ = nullptr;
+    uint32_t diagnosticWidth_ = 0;
+    uint32_t diagnosticHeight_ = 0;
+    uint32_t diagnosticFormat_ = 0;
+    uint32_t diagnosticSamples_ = 0;
+    vr::SharedTextureHandle_t syncHandle_ = 0;
+    ID3D11Texture2D* syncTexture_ = nullptr;
+    IDXGIKeyedMutex* syncMutex_ = nullptr;
+    uint64_t diagnosticSequence_ = 0;
     bool loggedCreate_ = false;
     bool loggedDestroy_ = false;
     bool loggedDestroyAll_ = false;
@@ -88,4 +104,6 @@ private:
     bool loggedPresent_ = false;
     bool loggedPost_ = false;
     bool loggedTiming_ = false;
+    bool loggedSync_ = false;
+    bool loggedCapture_ = false;
 };

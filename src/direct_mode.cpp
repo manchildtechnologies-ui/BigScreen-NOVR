@@ -4,6 +4,7 @@
 #include <dxgi1_2.h>
 #include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 
 #pragma comment(lib, "d3d11.lib")
@@ -20,6 +21,15 @@ DirectMode::DirectMode() = default;
 
 DirectMode::~DirectMode() {
     ReleaseAllTextureSets();
+    ReleaseSyncTexture();
+    if (diagnosticStaging_) {
+        diagnosticStaging_->Release();
+        diagnosticStaging_ = nullptr;
+    }
+    if (d3dContext_) {
+        d3dContext_->Release();
+        d3dContext_ = nullptr;
+    }
     if (d3dDevice_) {
         d3dDevice_->Release();
         d3dDevice_ = nullptr;
@@ -73,12 +83,12 @@ bool DirectMode::InitializeGraphicsIdentity() {
     if (found) {
         D3D_FEATURE_LEVEL level{};
         ID3D11Device* device = nullptr;
-        ID3D11DeviceContext* context = nullptr;
         const HRESULT hr = D3D11CreateDevice(
             adapter_, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, nullptr, 0,
-            D3D11_SDK_VERSION, &device, &level, &context);
-        if (context) context->Release();
+            D3D11_SDK_VERSION, &device, &level, &d3dContext_);
         if (FAILED(hr)) {
+            if (d3dContext_) d3dContext_->Release();
+            d3dContext_ = nullptr;
             adapter_->Release();
             adapter_ = nullptr;
             adapterLuid_ = 0;
@@ -200,6 +210,139 @@ void DirectMode::DestroyAllSwapTextureSets(uint32_t pid) {
     LogOnce(loggedDestroyAll_, "Direct Mode DestroyAllSwapTextureSets released process sets");
 }
 
+namespace {
+
+std::wstring DiagnosticDirectory() {
+    wchar_t tempPath[MAX_PATH]{};
+    const DWORD length = GetTempPathW(static_cast<DWORD>(std::size(tempPath)), tempPath);
+    std::filesystem::path directory = (length > 0 && length < std::size(tempPath))
+        ? std::filesystem::path(tempPath)
+        : std::filesystem::path(L".");
+    directory /= L"BigscreenDesktopBridge";
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    return directory.wstring();
+}
+
+std::wstring DiagnosticRequestPath() {
+    return (std::filesystem::path(DiagnosticDirectory()) / L"direct_mode_capture.request").wstring();
+}
+
+std::wstring DiagnosticFramePath() {
+    return (std::filesystem::path(DiagnosticDirectory()) / L"direct_mode_left_eye.raw").wstring();
+}
+
+#pragma pack(push, 1)
+struct RawFrameHeader {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t width;
+    uint32_t height;
+    uint32_t rowPitch;
+    uint32_t format;
+    uint32_t byteCount;
+    uint64_t sequence;
+};
+#pragma pack(pop)
+
+constexpr uint32_t kRawFrameMagic = 0x52464442; // "BDFR"
+
+}
+
+bool DirectMode::EnsureDiagnosticStaging(TextureSet* set) {
+    if (!set || !d3dDevice_ || !d3dContext_ || set->sampleCount != 1) return false;
+    if (diagnosticStaging_ && diagnosticWidth_ == set->width && diagnosticHeight_ == set->height &&
+        diagnosticFormat_ == set->format && diagnosticSamples_ == set->sampleCount) return true;
+    if (diagnosticStaging_) {
+        diagnosticStaging_->Release();
+        diagnosticStaging_ = nullptr;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = set->width;
+    desc.Height = set->height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = static_cast<DXGI_FORMAT>(set->format);
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    if (FAILED(d3dDevice_->CreateTexture2D(&desc, nullptr, &diagnosticStaging_))) {
+        diagnosticStaging_ = nullptr;
+        return false;
+    }
+    diagnosticWidth_ = set->width;
+    diagnosticHeight_ = set->height;
+    diagnosticFormat_ = set->format;
+    diagnosticSamples_ = set->sampleCount;
+    return true;
+}
+
+bool DirectMode::CaptureRequested() const {
+    return GetFileAttributesW(DiagnosticRequestPath().c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+bool DirectMode::WriteRawDiagnosticFrame(const TextureSet* set, uint32_t textureIndex) {
+    if (!set || textureIndex >= 3 || !set->textures[textureIndex] ||
+        !EnsureDiagnosticStaging(const_cast<TextureSet*>(set))) {
+        LogOnce(loggedCapture_, "Direct Mode raw capture failed: staging resource unavailable");
+        return false;
+    }
+    d3dContext_->CopyResource(diagnosticStaging_, set->textures[textureIndex]);
+    d3dContext_->Flush();
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(d3dContext_->Map(diagnosticStaging_, 0, D3D11_MAP_READ, 0, &mapped))) {
+        LogOnce(loggedCapture_, "Direct Mode raw capture failed: staging map failed");
+        return false;
+    }
+
+    const uint32_t byteCount = mapped.RowPitch * diagnosticHeight_;
+    RawFrameHeader header{
+        kRawFrameMagic, 1, diagnosticWidth_, diagnosticHeight_, mapped.RowPitch,
+        diagnosticFormat_, byteCount, ++diagnosticSequence_};
+    const std::wstring finalPath = DiagnosticFramePath();
+    const std::wstring temporaryPath = finalPath + L".tmp";
+    HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    bool success = false;
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        success = WriteFile(file, &header, sizeof(header), &written, nullptr) && written == sizeof(header);
+        for (uint32_t row = 0; success && row < diagnosticHeight_; ++row) {
+            const BYTE* source = static_cast<const BYTE*>(mapped.pData) +
+                                 static_cast<size_t>(row) * mapped.RowPitch;
+            success = WriteFile(file, source, mapped.RowPitch, &written, nullptr) && written == mapped.RowPitch;
+        }
+        FlushFileBuffers(file);
+        CloseHandle(file);
+    }
+    if (success) {
+        DeleteFileW(finalPath.c_str());
+        success = MoveFileW(temporaryPath.c_str(), finalPath.c_str()) != FALSE;
+    } else {
+        DeleteFileW(temporaryPath.c_str());
+    }
+    d3dContext_->Unmap(diagnosticStaging_, 0);
+
+    char line[512];
+    sprintf_s(line, "Direct Mode raw left-eye capture %s size=%ux%u format=%u rowPitch=%u bytes=%u sequence=%llu path=%ls",
+              success ? "saved" : "failed", diagnosticWidth_, diagnosticHeight_, diagnosticFormat_,
+              mapped.RowPitch, byteCount, static_cast<unsigned long long>(header.sequence), finalPath.c_str());
+    vr::VRDriverLog()->Log(line);
+    return success;
+}
+
+void DirectMode::ReleaseSyncTexture() {
+    if (syncMutex_) {
+        syncMutex_->Release();
+        syncMutex_ = nullptr;
+    }
+    if (syncTexture_) {
+        syncTexture_->Release();
+        syncTexture_ = nullptr;
+    }
+    syncHandle_ = 0;
+}
+
 void DirectMode::GetNextSwapTextureSetIndex(vr::SharedTextureHandle_t handles[2], uint32_t (*indices)[2]) {
     if (indices) {
         std::lock_guard<std::mutex> lock(textureMutex_);
@@ -251,7 +394,48 @@ void DirectMode::SubmitLayer(const SubmitLayerPerEye_t (&perEye)[2]) {
     }
 }
 
-void DirectMode::Present(vr::SharedTextureHandle_t) {
+void DirectMode::Present(vr::SharedTextureHandle_t syncTexture) {
+    if (CaptureRequested()) {
+        DeleteFileW(DiagnosticRequestPath().c_str());
+        SubmitDiagnostic left;
+        TextureSet* set = nullptr;
+        uint32_t textureIndex = 0;
+        {
+            std::lock_guard<std::mutex> lock(textureMutex_);
+            left = lastSubmit_;
+            const auto found = handleIndex_.find(left.handles[0]);
+            if (found != handleIndex_.end()) {
+                set = found->second;
+                textureIndex = left.indices[0];
+            }
+        }
+        if (!set) {
+            LogOnce(loggedCapture_, "Direct Mode raw capture failed: left-eye handle unmapped");
+        } else {
+            if (syncHandle_ != syncTexture) {
+                ReleaseSyncTexture();
+                syncHandle_ = syncTexture;
+                if (syncHandle_ && FAILED(d3dDevice_->OpenSharedResource(
+                        reinterpret_cast<HANDLE>(static_cast<uintptr_t>(syncHandle_)),
+                        IID_PPV_ARGS(&syncTexture_)))) {
+                    syncTexture_ = nullptr;
+                }
+                if (syncTexture_) syncTexture_->QueryInterface(IID_PPV_ARGS(&syncMutex_));
+            }
+            if (!syncTexture_ || !syncMutex_) {
+                LogOnce(loggedSync_, "Direct Mode raw capture failed: sync texture has no keyed mutex");
+            } else if (SUCCEEDED(syncMutex_->AcquireSync(0, 100))) {
+                if (!loggedSync_) {
+                    loggedSync_ = true;
+                    vr::VRDriverLog()->Log("Direct Mode raw capture synchronization acquired");
+                }
+                WriteRawDiagnosticFrame(set, textureIndex);
+                syncMutex_->ReleaseSync(0);
+            } else {
+                LogOnce(loggedSync_, "Direct Mode raw capture failed: AcquireSync failed");
+            }
+        }
+    }
     LogOnce(loggedPresent_, "Direct Mode Present");
 }
 
