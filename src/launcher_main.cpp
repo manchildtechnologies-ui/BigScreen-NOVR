@@ -184,7 +184,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
         if (PtInRect(&g_minButton, point)) { ShowWindow(hwnd, SW_MINIMIZE); return 0; }
         if (g_viewerEnabled && PtInRect(&g_viewerButton, point)) {
             const fs::path viewer = g_installRoot / L"BigscreenDesktopViewer.exe";
-            if (ProcessExists(L"BigscreenDesktopViewer.exe") || StartVisible(viewer)) SetStatus(L"Viewer opened. SteamVR and the bridge remain running in the background.");
+            if (ProcessExists(L"BigscreenDesktopViewer.exe") || StartHidden(viewer)) SetStatus(L"Viewer opened. SteamVR and the bridge remain running in the background.");
             else SetStatus(L"Could not open the viewer.");
             return 0;
         }
