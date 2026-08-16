@@ -1,0 +1,11 @@
+build/
+dist/
+.vs/
+*.user
+*.suo
+*.log
+*.err
+*.tmp
+phase*-state/
+viewer-*.png
+*.pdb

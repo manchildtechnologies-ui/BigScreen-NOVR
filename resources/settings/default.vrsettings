@@ -1,0 +1,10 @@
+{
+  "driver_bigscreen_desktop": {
+    "enable": true,
+    "controller_index": 0,
+    "right_stick_deadzone": 0.15,
+    "right_stick_sensitivity": 2.2,
+    "pitch_limit_degrees": 80.0,
+    "log_interval_seconds": 1.0
+  }
+}

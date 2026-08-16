@@ -1,0 +1,6 @@
+{
+  "alwaysActivate": true,
+  "name": "bigscreen_desktop",
+  "resourceOnly": false,
+  "hmd_presence": ["*.*"]
+}

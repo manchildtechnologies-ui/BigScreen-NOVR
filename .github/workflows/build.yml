@@ -1,0 +1,20 @@
+name: Build x64
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get official Valve OpenVR SDK
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/ValveSoftware/openvr.git "$env:GITHUB_WORKSPACE\openvr"
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -A x64 -DOPENVR_SDK_ROOT="$env:GITHUB_WORKSPACE\openvr"
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
