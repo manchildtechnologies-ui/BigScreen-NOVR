@@ -367,13 +367,25 @@ private:
 
 class WindowsGamepadReader final {
 public:
+    bool Available() const { return available_; }
+
     XboxState Snapshot() {
         XboxState result;
         try {
             const auto gamepads = winrt::Windows::Gaming::Input::Gamepad::Gamepads();
-            if (gamepads.Size() == 0) return result;
-            const auto pad = gamepads.GetAt(0);
-            const auto reading = pad.GetCurrentReading();
+            const uint32_t count = gamepads.Size();
+            available_ = count != 0;
+            if (count != lastCount_) {
+                std::printf("[WGI-TRACE] gamepad count=%u\n", count);
+                lastCount_ = count;
+                if (count == 0) pad_ = nullptr;
+            }
+            if (count == 0) return result;
+            if (!pad_) {
+                pad_ = gamepads.GetAt(0);
+                std::printf("[WGI-TRACE] selected Gamepad::Gamepads()[0]\n");
+            }
+            const auto reading = pad_.GetCurrentReading();
             result.connected = true;
             result.leftX = static_cast<float>(reading.LeftThumbstickX);
             result.leftY = static_cast<float>(reading.LeftThumbstickY);
@@ -396,6 +408,15 @@ public:
             if (has(winrt::Windows::Gaming::Input::GamepadButtons::View)) result.buttons |= bigscreen_desktop_controller_ipc::Button_View;
             if (has(winrt::Windows::Gaming::Input::GamepadButtons::Menu)) result.buttons |= bigscreen_desktop_controller_ipc::Button_Menu;
             result.dpad = buttons & (0x40u | 0x80u | 0x100u | 0x200u);
+            if (!rawReported_ || std::fabs(result.rightX - rawRightX_) > 0.01f ||
+                std::fabs(result.rightY - rawRightY_) > 0.01f || result.buttons != rawButtons_) {
+                std::printf("[WGI-TRACE] reading=OK buttons=0x%03X RX=%+.3f RY=%+.3f\n",
+                            result.buttons, result.rightX, result.rightY);
+                rawRightX_ = result.rightX;
+                rawRightY_ = result.rightY;
+                rawButtons_ = result.buttons;
+                rawReported_ = true;
+            }
             const bool a = (result.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
             if (!aReported_ || a != lastA_) {
                 std::printf("[A-TRACE] Windows.Gaming.Input A=%s\n", a ? "DOWN" : "UP");
@@ -422,10 +443,11 @@ public:
                 reported_ = true;
             }
         } catch (const winrt::hresult_error& error) {
-            if (!reported_) {
-                std::printf("Windows.Gaming.Input: unavailable/error=0x%08X\n",
-                            static_cast<unsigned>(error.code().value));
-                reported_ = true;
+            const unsigned code = static_cast<unsigned>(error.code().value);
+            if (!readErrorReported_ || code != lastReadError_) {
+                std::printf("[WGI-TRACE] reading=FAILED error=0x%08X\n", code);
+                lastReadError_ = code;
+                readErrorReported_ = true;
             }
         }
         return result;
@@ -437,6 +459,15 @@ private:
     XboxState last_;
     bool aReported_ = false;
     bool lastA_ = false;
+    winrt::Windows::Gaming::Input::Gamepad pad_{nullptr};
+    uint32_t lastCount_ = 0;
+    bool available_ = false;
+    bool rawReported_ = false;
+    float rawRightX_ = 0.0f;
+    float rawRightY_ = 0.0f;
+    uint32_t rawButtons_ = 0;
+    bool readErrorReported_ = false;
+    unsigned lastReadError_ = 0;
 };
 
 double ReadMouseSensitivity() {
@@ -602,7 +633,7 @@ int main() {
         if (GetAsyncKeyState(VK_DOWN) & 0x8000) pitch -= kPitchRate * dt;
         const XboxState hidXbox = xboxReader.Snapshot();
         const XboxState gamepadXbox = windowsGamepadReader.Snapshot();
-        const XboxState xbox = gamepadXbox.connected ? gamepadXbox : hidXbox;
+        const XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
         const float rightX = ApplyControllerDeadzone(xbox.rightX);
         const float rightY = ApplyControllerDeadzone(xbox.rightY);
         if (xbox.connected) {
