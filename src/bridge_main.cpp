@@ -287,6 +287,12 @@ private:
             state_ = next;
         }
         ++reportCount_;
+        const bool hidA = (next.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+        if (!aReported_ || hidA != lastA_) {
+            std::printf("[A-TRACE] HID A=%s\n", hidA ? "DOWN" : "UP");
+            lastA_ = hidA;
+            aReported_ = true;
+        }
         if (reportCount_ == 1 || std::fabs(next.rightX - previous.rightX) > 0.02f ||
             std::fabs(next.rightY - previous.rightY) > 0.02f || next.buttons != previous.buttons) {
             std::printf("Xbox raw report bytes=%lu RX=%+.3f RY=%+.3f LX=%+.3f LY=%+.3f "
@@ -363,6 +369,8 @@ private:
     std::wstring path_;
     std::unordered_set<std::wstring> diagnosedPaths_;
     uint64_t reportCount_ = 0;
+    bool aReported_ = false;
+    bool lastA_ = false;
 };
 
 class WindowsGamepadReader final {
@@ -633,7 +641,12 @@ int main() {
         if (GetAsyncKeyState(VK_DOWN) & 0x8000) pitch -= kPitchRate * dt;
         const XboxState hidXbox = xboxReader.Snapshot();
         const XboxState gamepadXbox = windowsGamepadReader.Snapshot();
-        const XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
+        XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
+        if (hidXbox.connected) {
+            xbox.connected = true;
+            xbox.buttons = (xbox.buttons & ~bigscreen_desktop_controller_ipc::Button_A) |
+                           (hidXbox.buttons & bigscreen_desktop_controller_ipc::Button_A);
+        }
         const float rightX = ApplyControllerDeadzone(xbox.rightX);
         const float rightY = ApplyControllerDeadzone(xbox.rightY);
         if (xbox.connected) {
