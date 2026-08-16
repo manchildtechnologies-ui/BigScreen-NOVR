@@ -39,6 +39,10 @@ add_executable(BigscreenDesktopBridge WIN32
 target_include_directories(BigscreenDesktopBridge PRIVATE src)
 target_compile_features(BigscreenDesktopBridge PRIVATE cxx_std_17)
 target_compile_definitions(BigscreenDesktopBridge PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _AMD64_ _WIN64)
+target_include_directories(BigscreenDesktopBridge PRIVATE
+  "C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/cppwinrt"
+)
+target_link_libraries(BigscreenDesktopBridge PRIVATE setupapi hid runtimeobject)
 set_target_properties(BigscreenDesktopBridge PROPERTIES
   OUTPUT_NAME "BigscreenDesktopBridge"
   WIN32_EXECUTABLE FALSE
