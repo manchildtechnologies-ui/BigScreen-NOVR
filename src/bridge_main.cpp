@@ -33,8 +33,8 @@ constexpr double kYawRate = 1.8;
 constexpr double kPitchRate = 1.5;
 constexpr double kDefaultMouseSensitivity = 0.0025;
 constexpr float kControllerDeadzone = 0.15f;
-constexpr double kControllerYawRate = 2.4;
-constexpr double kControllerPitchRate = 2.0;
+constexpr double kXboxRightStickYawRate = 2.4;
+constexpr double kXboxRightStickPitchRate = 2.0;
 
 struct XboxState {
     bool connected = false;
@@ -48,7 +48,14 @@ struct XboxState {
     uint32_t dpad = 8;
 };
 
-float NormalizeAxis(ULONG value, LONG logicalMin, LONG logicalMax) {
+float NormalizeAxis(ULONG value, const HIDP_VALUE_CAPS& caps) {
+    ULONG inferredMax = 0;
+    const LONG logicalMin = caps.LogicalMin;
+    LONG logicalMax = caps.LogicalMax;
+    if (logicalMax <= logicalMin && caps.BitSize > 0 && caps.BitSize < 32) {
+        inferredMax = (1u << caps.BitSize) - 1u;
+        logicalMax = static_cast<LONG>(inferredMax);
+    }
     const float lo = static_cast<float>(logicalMin);
     const float hi = static_cast<float>(logicalMax);
     if (hi <= lo) return 0.0f;
@@ -253,10 +260,10 @@ private:
         const XboxState previous = next;
         next.connected = true;
         ULONG value = 0;
-        if (GetValue(leftXCaps_, report, bytes, value)) next.leftX = NormalizeAxis(value, leftXCaps_.LogicalMin, leftXCaps_.LogicalMax);
-        if (GetValue(leftYCaps_, report, bytes, value)) next.leftY = NormalizeAxis(value, leftYCaps_.LogicalMin, leftYCaps_.LogicalMax);
-        if (GetValue(rightXCaps_, report, bytes, value)) next.rightX = NormalizeAxis(value, rightXCaps_.LogicalMin, rightXCaps_.LogicalMax);
-        if (GetValue(rightYCaps_, report, bytes, value)) next.rightY = NormalizeAxis(value, rightYCaps_.LogicalMin, rightYCaps_.LogicalMax);
+        if (GetValue(leftXCaps_, report, bytes, value)) next.leftX = NormalizeAxis(value, leftXCaps_);
+        if (GetValue(leftYCaps_, report, bytes, value)) next.leftY = NormalizeAxis(value, leftYCaps_);
+        if (GetValue(rightXCaps_, report, bytes, value)) next.rightX = NormalizeAxis(value, rightXCaps_);
+        if (GetValue(rightYCaps_, report, bytes, value)) next.rightY = NormalizeAxis(value, rightYCaps_);
         if (GetValue(leftTriggerCaps_, report, bytes, value)) next.leftTrigger = NormalizeTrigger(value, leftTriggerCaps_.LogicalMin, leftTriggerCaps_.LogicalMax);
         if (GetValue(rightTriggerCaps_, report, bytes, value)) next.rightTrigger = NormalizeTrigger(value, rightTriggerCaps_.LogicalMin, rightTriggerCaps_.LogicalMax);
         if (GetValue(dpadCaps_, report, bytes, value)) next.dpad = value;
@@ -287,6 +294,15 @@ private:
             state_ = next;
         }
         ++reportCount_;
+        const bool rawChanged = !rawReportReported_ || lastRawReport_.size() != bytes ||
+            std::memcmp(lastRawReport_.data(), report, bytes) != 0;
+        if (rawChanged) {
+            std::printf("[HID-RAW] bytes=%lu data=", static_cast<unsigned long>(bytes));
+            for (DWORD i = 0; i < bytes; ++i) std::printf("%02X", report[i]);
+            std::printf("\n");
+            lastRawReport_.assign(report, report + bytes);
+            rawReportReported_ = true;
+        }
         const bool hidA = (next.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
         if (!aReported_ || hidA != lastA_) {
             std::printf("[A-TRACE] HID A=%s\n", hidA ? "DOWN" : "UP");
@@ -369,6 +385,8 @@ private:
     std::wstring path_;
     std::unordered_set<std::wstring> diagnosedPaths_;
     uint64_t reportCount_ = 0;
+    bool rawReportReported_ = false;
+    std::vector<BYTE> lastRawReport_;
     bool aReported_ = false;
     bool lastA_ = false;
 };
@@ -644,14 +662,16 @@ int main() {
         XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
         if (hidXbox.connected) {
             xbox.connected = true;
+            xbox.rightX = hidXbox.rightX;
+            xbox.rightY = hidXbox.rightY;
             xbox.buttons = (xbox.buttons & ~bigscreen_desktop_controller_ipc::Button_A) |
                            (hidXbox.buttons & bigscreen_desktop_controller_ipc::Button_A);
         }
         const float rightX = ApplyControllerDeadzone(xbox.rightX);
         const float rightY = ApplyControllerDeadzone(xbox.rightY);
         if (xbox.connected) {
-            yaw += static_cast<double>(rightX) * kControllerYawRate * dt;
-            pitch -= static_cast<double>(rightY) * kControllerPitchRate * dt;
+            yaw += static_cast<double>(rightX) * kXboxRightStickYawRate * dt;
+            pitch -= static_cast<double>(rightY) * kXboxRightStickPitchRate * dt;
             if ((xbox.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) &&
                 !(previousButtons & bigscreen_desktop_controller_ipc::Button_RightStick)) {
                 yaw = 0.0;
