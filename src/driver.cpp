@@ -56,7 +56,7 @@ constexpr double kCameraBackOffsetMeters = 2.5;
 constexpr double kCameraHeightOffsetMeters = 0.9;
 constexpr double kArmAdjustRateMetersPerSecond = 0.8;
 
-void ApplyCameraOffset(double yaw, double& x, double& y, double& z) {
+void ApplyLegacyHmdOffset(double yaw, double& x, double& y, double& z) {
     x += std::sin(yaw) * kCameraBackOffsetMeters;
     y += kCameraHeightOffsetMeters;
     z += std::cos(yaw) * kCameraBackOffsetMeters;
@@ -392,12 +392,19 @@ public:
         double ipcPositionZ = positionZ_;
         double ipcYaw = yaw_;
         double ipcPitch = pitch_;
-        if (ReadPoseFromIpc(ipcPositionX, ipcPositionZ, ipcYaw, ipcPitch, ipcActive)) {
+        bigscreen_desktop_ipc::ViewMode viewMode = bigscreen_desktop_ipc::ViewMode::Normal;
+        if (ReadPoseFromIpc(ipcPositionX, ipcPositionZ, ipcYaw, ipcPitch, ipcActive, viewMode)) {
             positionX_ = ipcPositionX;
             positionZ_ = ipcPositionZ;
             yaw_ = ipcYaw;
             pitch_ = std::clamp(ipcPitch, -static_cast<double>(g_config.pitchLimit),
                                 static_cast<double>(g_config.pitchLimit));
+        }
+        if (viewMode != lastViewMode_) {
+            lastViewMode_ = viewMode;
+            vr::VRDriverLog()->Log(viewMode == bigscreen_desktop_ipc::ViewMode::Normal
+                ? "VIEW DIAGNOSTIC: NORMAL HMD POSE"
+                : "VIEW DIAGNOSTIC: LEGACY HMD OFFSET back=2.50m height=0.90m");
         }
         if (ipcActive != ipcConnected_) {
             ipcConnected_ = ipcActive;
@@ -411,7 +418,8 @@ public:
         double cameraX = positionX_;
         double cameraY = 1.6;
         double cameraZ = positionZ_;
-        ApplyCameraOffset(yaw_, cameraX, cameraY, cameraZ);
+        if (viewMode == bigscreen_desktop_ipc::ViewMode::LegacyHmdOffset)
+            ApplyLegacyHmdOffset(yaw_, cameraX, cameraY, cameraZ);
         next.vecPosition[0] = cameraX;
         next.vecPosition[1] = cameraY;
         next.vecPosition[2] = cameraZ;
@@ -438,7 +446,8 @@ public:
 
 private:
     bool ReadPoseFromIpc(double& positionX, double& positionZ,
-                         double& yaw, double& pitch, bool& active) {
+                         double& yaw, double& pitch, bool& active,
+                         bigscreen_desktop_ipc::ViewMode& viewMode) {
         if (!mapping_) {
             mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_ipc::kMappingName);
             if (mapping_) {
@@ -451,8 +460,9 @@ private:
             }
         }
         if (sharedState_ && bigscreen_desktop_ipc::Read(sharedState_, positionX, positionZ,
-                                                        yaw, pitch, active)) return true;
+                                                        yaw, pitch, active, viewMode)) return true;
         active = false;
+        viewMode = bigscreen_desktop_ipc::ViewMode::Normal;
         return false;
     }
 
@@ -469,6 +479,7 @@ private:
     std::mutex mutex_;
     bool active_ = false;
     bool ipcConnected_ = false;
+    bigscreen_desktop_ipc::ViewMode lastViewMode_ = bigscreen_desktop_ipc::ViewMode::Normal;
     double positionX_ = 0.0, positionZ_ = 0.0;
     double yaw_ = 0.0, pitch_ = 0.0, logAccumulator_ = 0.0;
     HANDLE mapping_ = nullptr;
@@ -562,7 +573,8 @@ public:
         double yaw = 0.0;
         double pitch = 0.0;
         bool hmdActive = false;
-        ReadHmdPose(positionX, positionZ, yaw, pitch, hmdActive);
+        bigscreen_desktop_ipc::ViewMode viewMode = bigscreen_desktop_ipc::ViewMode::Normal;
+        ReadHmdPose(positionX, positionZ, yaw, pitch, hmdActive, viewMode);
         const vr::HmdQuaternion_t rotation = QuaternionFromYawPitch(yaw, pitch);
         const float localX = 0.30f + static_cast<float>(armWidthOffset_);
         const float localY = -0.25f + static_cast<float>(armHeightOffset_);
@@ -583,7 +595,8 @@ public:
         double cameraX = positionX;
         double cameraY = 1.6;
         double cameraZ = positionZ;
-        ApplyCameraOffset(yaw, cameraX, cameraY, cameraZ);
+        if (viewMode == bigscreen_desktop_ipc::ViewMode::LegacyHmdOffset)
+            ApplyLegacyHmdOffset(yaw, cameraX, cameraY, cameraZ);
         next.vecPosition[0] = static_cast<float>(cameraX) + rotatedX;
         next.vecPosition[1] = static_cast<float>(cameraY) + rotatedY;
         next.vecPosition[2] = static_cast<float>(cameraZ) + rotatedZ;
@@ -710,7 +723,8 @@ private:
     }
 
     void ReadHmdPose(double& positionX, double& positionZ,
-                     double& yaw, double& pitch, bool& active) {
+                     double& yaw, double& pitch, bool& active,
+                     bigscreen_desktop_ipc::ViewMode& viewMode) {
         if (!poseMapping_) {
             poseMapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_ipc::kMappingName);
             if (poseMapping_) {
@@ -723,8 +737,9 @@ private:
             }
         }
         if (poseState_ && bigscreen_desktop_ipc::Read(poseState_, positionX, positionZ,
-                                                      yaw, pitch, active)) return;
+                                                      yaw, pitch, active, viewMode)) return;
         active = false;
+        viewMode = bigscreen_desktop_ipc::ViewMode::Normal;
     }
 
     void CloseIpc() {

@@ -1,5 +1,6 @@
 #include "pose_ipc.h"
 #include "controller_ipc.h"
+#include "bindings.h"
 
 #include <Windows.h>
 #include <winrt/base.h>
@@ -17,6 +18,7 @@
 #include <cwctype>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -48,6 +50,28 @@ struct XboxState {
     uint32_t buttons = 0;
     uint32_t dpad = 8;
 };
+
+uint32_t CanonicalDpadMask(uint32_t dpad) {
+    if (dpad > 7u) return dpad & (0x40u | 0x80u | 0x100u | 0x200u);
+    switch (dpad) {
+    case 0: return 0x40u;
+    case 2: return 0x200u;
+    case 4: return 0x80u;
+    case 6: return 0x100u;
+    default: return 0;
+    }
+}
+
+bool GamepadActionDown(const std::map<bigscreen_bindings::Action, bigscreen_bindings::Binding>& bindings,
+                       bigscreen_bindings::Action action, const XboxState& xbox) {
+    const auto it = bindings.find(action);
+    if (it == bindings.end() || it->second.device != bigscreen_bindings::Device::Gamepad) return false;
+    const int code = it->second.code;
+    if (code == 4) return xbox.leftTrigger > 0.5f;
+    if (code == 5) return xbox.rightTrigger > 0.5f;
+    if (code >= 0x40) return (CanonicalDpadMask(xbox.dpad) & static_cast<uint32_t>(code)) != 0;
+    return code >= 0 && code < 32 && (xbox.buttons & (1u << code)) != 0;
+}
 
 float NormalizeAxis(ULONG value, const HIDP_VALUE_CAPS& caps) {
     ULONG inferredMax = 0;
@@ -281,7 +305,18 @@ private:
         if (GetValue(rightYCaps_, report, bytes, value)) next.rightY = NormalizeAxis(value, rightYCaps_);
         if (GetValue(leftTriggerCaps_, report, bytes, value)) next.leftTrigger = NormalizeTrigger(value, leftTriggerCaps_.LogicalMin, leftTriggerCaps_.LogicalMax);
         if (GetValue(rightTriggerCaps_, report, bytes, value)) next.rightTrigger = NormalizeTrigger(value, rightTriggerCaps_.LogicalMin, rightTriggerCaps_.LogicalMax);
-        if (GetValue(dpadCaps_, report, bytes, value)) next.dpad = value;
+        if (GetValue(dpadCaps_, report, bytes, value)) {
+            // HID hat switches commonly encode the released/null state with
+            // a value outside the 0..7 direction range. Some Bluetooth Xbox
+            // reports expose that null state through the capability's Null
+            // value; normalize it to the IPC neutral value 8 so the driver
+            // cannot mistake release for D-pad Up (hat value 0).
+            if (dpadCaps_.HasNull && static_cast<LONG>(value) > dpadCaps_.LogicalMax) {
+                next.dpad = 8;
+            } else {
+                next.dpad = value;
+            }
+        }
 
         USAGE usages[32]{};
         ULONG usageCount = 32;
@@ -601,7 +636,7 @@ int main() {
     }
 
     *state = PoseState{};
-    Publish(state, 0.0, 0.0, 0.0, 0.0, true);
+    Publish(state, 0.0, 0.0, 0.0, 0.0, true, bigscreen_desktop_ipc::ViewMode::Normal);
 
     HANDLE controllerMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
                                                    0, static_cast<DWORD>(sizeof(bigscreen_desktop_controller_ipc::ControllerState)),
@@ -636,6 +671,7 @@ int main() {
     std::printf("Controller IPC: %ls\n", bigscreen_desktop_controller_ipc::kMappingName);
 
     const HWND consoleWindow = GetConsoleWindow();
+    const auto bindings = bigscreen_bindings::Load(bigscreen_bindings::SettingsPath());
     const HWND rawInputWindow = CreateRawInputWindow();
     const double mouseSensitivity = ReadMouseSensitivity();
     const HWND rawTarget = rawInputWindow ? rawInputWindow : consoleWindow;
@@ -646,6 +682,8 @@ int main() {
     std::printf("Xbox Raw Input: %s\n", rawControllerReady ? "ready" : "unavailable");
 
     bool running = true;
+    bigscreen_desktop_ipc::ViewMode viewMode = bigscreen_desktop_ipc::ViewMode::Normal;
+    bool lastViewModeKey = false;
     bool mouseLookActive = false;
     double yaw = 0.0;
     double pitch = 0.0;
@@ -660,22 +698,43 @@ int main() {
         const double dt = std::clamp(static_cast<double>(now - lastTick) / 1000.0, 0.0, 0.1);
         lastTick = now;
 
-        if (GetAsyncKeyState(VK_F8) & 0x0001) mouseLookActive = !mouseLookActive;
-        if (GetAsyncKeyState(VK_ESCAPE) & 0x0001) {
+        const auto keyDown = [&bindings](bigscreen_bindings::Action action) {
+            const auto it = bindings.find(action);
+            return it != bindings.end() && it->second.device == bigscreen_bindings::Device::Keyboard &&
+                   (GetAsyncKeyState(it->second.code) & 0x8000) != 0;
+        };
+        const auto keyPressed = [&bindings](bigscreen_bindings::Action action) {
+            const auto it = bindings.find(action);
+            return it != bindings.end() && it->second.device == bigscreen_bindings::Device::Keyboard &&
+                   (GetAsyncKeyState(it->second.code) & 0x0001) != 0;
+        };
+        if (keyPressed(bigscreen_bindings::Action::LookToggle)) mouseLookActive = !mouseLookActive;
+        const bool viewModeKey = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
+        if (viewModeKey && !lastViewModeKey) {
+            viewMode = viewMode == bigscreen_desktop_ipc::ViewMode::Normal
+                ? bigscreen_desktop_ipc::ViewMode::LegacyHmdOffset
+                : bigscreen_desktop_ipc::ViewMode::Normal;
+            std::printf("VIEW DIAGNOSTIC: %s\n",
+                        viewMode == bigscreen_desktop_ipc::ViewMode::Normal
+                            ? "NORMAL HMD POSE"
+                            : "LEGACY HMD OFFSET back=2.50m height=0.90m");
+        }
+        lastViewModeKey = viewModeKey;
+        if (keyPressed(bigscreen_bindings::Action::Exit)) {
             if (mouseLookActive) mouseLookActive = false;
             else running = false;
         }
-        if (GetAsyncKeyState('R') & 0x0001) {
+        if (keyPressed(bigscreen_bindings::Action::Reset)) {
             yaw = 0.0;
             pitch = 0.0;
         }
         if (rawMouseReady || rawControllerReady) {
             ProcessRawMouse(consoleWindow, mouseLookActive, mouseSensitivity, yaw, pitch, &xboxReader);
         }
-        if (GetAsyncKeyState(VK_LEFT) & 0x8000) yaw -= kYawRate * dt;
-        if (GetAsyncKeyState(VK_RIGHT) & 0x8000) yaw += kYawRate * dt;
-        if (GetAsyncKeyState(VK_UP) & 0x8000) pitch += kPitchRate * dt;
-        if (GetAsyncKeyState(VK_DOWN) & 0x8000) pitch -= kPitchRate * dt;
+        if (keyDown(bigscreen_bindings::Action::MoveLeft)) yaw -= kYawRate * dt;
+        if (keyDown(bigscreen_bindings::Action::MoveRight)) yaw += kYawRate * dt;
+        if (keyDown(bigscreen_bindings::Action::MoveForward)) pitch += kPitchRate * dt;
+        if (keyDown(bigscreen_bindings::Action::MoveBackward)) pitch -= kPitchRate * dt;
         const XboxState hidXbox = xboxReader.Snapshot();
         const XboxState gamepadXbox = windowsGamepadReader.Snapshot();
         XboxState xbox = windowsGamepadReader.Available() ? gamepadXbox : hidXbox;
@@ -685,8 +744,13 @@ int main() {
             xbox.leftY = hidXbox.leftY;
             xbox.rightX = hidXbox.rightX;
             xbox.rightY = hidXbox.rightY;
-            xbox.buttons = (xbox.buttons & ~bigscreen_desktop_controller_ipc::Button_A) |
-                           (hidXbox.buttons & bigscreen_desktop_controller_ipc::Button_A);
+            // WGI can enumerate the Bluetooth gamepad yet return a stale
+            // all-zero reading. HID is the live source, so keep its complete
+            // button/D-pad/trigger state instead of allowing WGI to erase it.
+            xbox.leftTrigger = hidXbox.leftTrigger;
+            xbox.rightTrigger = hidXbox.rightTrigger;
+            xbox.buttons = hidXbox.buttons;
+            xbox.dpad = hidXbox.dpad;
         }
         float rightX = 0.0f;
         float rightY = 0.0f;
@@ -718,7 +782,7 @@ int main() {
         }
         previousButtons = xbox.buttons;
         pitch = std::clamp(pitch, -kPitchLimit, kPitchLimit);
-        Publish(state, positionX, positionZ, yaw, pitch, running);
+        Publish(state, positionX, positionZ, yaw, pitch, running, viewMode);
         bigscreen_desktop_controller_ipc::Publish(controllerState, xbox.connected,
                                                   xbox.leftX, xbox.leftY, xbox.rightX, xbox.rightY,
                                                   xbox.leftTrigger, xbox.rightTrigger, xbox.buttons, xbox.dpad);
@@ -737,7 +801,7 @@ int main() {
         Sleep(10);
     }
 
-    Publish(state, positionX, positionZ, yaw, pitch, false);
+    Publish(state, positionX, positionZ, yaw, pitch, false, viewMode);
     bigscreen_desktop_controller_ipc::Publish(controllerState, false, 0, 0, 0, 0, 0, 0, 0, 8);
     xboxReader.Stop();
     std::printf("\nBridge exited.\n");

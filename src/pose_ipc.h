@@ -7,9 +7,14 @@ namespace bigscreen_desktop_ipc {
 
 // V2 uses a distinct mapping name so a V1 40-byte mapping can never be
 // interpreted as the larger X/Z pose layout.
-constexpr wchar_t kMappingName[] = L"Local\\BigscreenDesktopPoseV2";
+constexpr wchar_t kMappingName[] = L"Local\\BigscreenDesktopPoseV3";
 constexpr uint32_t kMagic = 0x42534450; // BSDP
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;
+
+enum class ViewMode : uint32_t {
+    Normal = 0,
+    LegacyHmdOffset = 1,
+};
 
 struct PoseState {
     uint32_t magic = kMagic;
@@ -17,6 +22,8 @@ struct PoseState {
     uint32_t size = 64;
     LONG sequence = 0;
     LONG active = 0;
+    uint32_t viewMode = static_cast<uint32_t>(ViewMode::Normal);
+    uint32_t reserved = 0;
     double positionX = 0.0;
     double positionZ = 0.0;
     double yaw = 0.0;
@@ -24,10 +31,10 @@ struct PoseState {
     ULONGLONG timestamp = 0;
 };
 
-static_assert(sizeof(PoseState) == 64, "PoseState layout changed");
+static_assert(sizeof(PoseState) == 72, "PoseState layout changed");
 
 inline void Publish(PoseState* state, double positionX, double positionZ,
-                    double yaw, double pitch, bool active) {
+                    double yaw, double pitch, bool active, ViewMode viewMode) {
     const LONG next = state->sequence + 1;
     InterlockedExchange(&state->sequence, next | 1);
     state->positionX = positionX;
@@ -35,12 +42,13 @@ inline void Publish(PoseState* state, double positionX, double positionZ,
     state->yaw = yaw;
     state->pitch = pitch;
     state->active = active ? 1 : 0;
+    state->viewMode = static_cast<uint32_t>(viewMode);
     state->timestamp = GetTickCount64();
     InterlockedExchange(&state->sequence, (next + 1) & ~1L);
 }
 
 inline bool Read(const PoseState* state, double& positionX, double& positionZ,
-                 double& yaw, double& pitch, bool& active) {
+                 double& yaw, double& pitch, bool& active, ViewMode& viewMode) {
     if (!state || state->magic != kMagic || state->version != kVersion ||
         state->size != sizeof(PoseState)) return false;
     for (int attempt = 0; attempt < 3; ++attempt) {
@@ -51,6 +59,7 @@ inline bool Read(const PoseState* state, double& positionX, double& positionZ,
         const double readYaw = state->yaw;
         const double readPitch = state->pitch;
         const bool readActive = state->active != 0;
+        const uint32_t readViewMode = state->viewMode;
         const LONG after = state->sequence;
         if (before == after && !(after & 1)) {
             positionX = readPositionX;
@@ -58,6 +67,8 @@ inline bool Read(const PoseState* state, double& positionX, double& positionZ,
             yaw = readYaw;
             pitch = readPitch;
             active = readActive;
+            viewMode = readViewMode == static_cast<uint32_t>(ViewMode::LegacyHmdOffset)
+                ? ViewMode::LegacyHmdOffset : ViewMode::Normal;
             return true;
         }
     }
