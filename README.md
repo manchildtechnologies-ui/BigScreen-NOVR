@@ -8,6 +8,20 @@ The project builds as an x64 Release DLL with Visual Studio 2019 Build Tools, Wi
 
 The driver has not been registered with SteamVR and Bigscreen has not been launched for this prototype.
 
+## v1.0.1 installer update
+
+The Windows installer now handles Steam installations outside the default
+location. It checks the normal Steam folders, Steam's registry install paths,
+and Steam library folders listed in `steamapps\libraryfolders.vdf`.
+
+If SteamVR still cannot be located automatically, the installer opens a folder
+picker so you can select the Steam installation folder manually. The selected
+path is saved for the launcher, so the launcher uses the same SteamVR location
+after installation.
+
+Download the current package from the
+[v1.0.1 release](https://github.com/manchildtechnologies-ui/BigScreen-NOVR/releases/tag/v1.0.1).
+
 ## API target
 
 The driver targets Valve's current OpenVR server-driver contract: `IServerTrackedDeviceProvider`, `ITrackedDeviceServerDriver`, `TrackedDevicePoseUpdated()`, and the exported `HmdDriverFactory`. The SDK header is supplied from the official Valve OpenVR checkout at `C:\Users\Vintendo\Documents\openvr-master` via `OPENVR_SDK_ROOT`.
