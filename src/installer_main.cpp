@@ -11,8 +11,10 @@
 #include <shlobj.h>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #ifdef BIGSCREEN_INSTALLER_MINMAX_DEFINED
 #undef min
@@ -44,13 +46,80 @@ int Fail(const std::wstring& text) {
     return 1;
 }
 
+void AddSteamCandidate(std::vector<fs::path>& candidates, const fs::path& path) {
+    if (path.empty() || !fs::exists(path)) return;
+    std::error_code error;
+    const fs::path normalized = fs::weakly_canonical(path, error);
+    const fs::path value = error ? path : normalized;
+    for (const auto& candidate : candidates) if (candidate == value) return;
+    candidates.push_back(value);
+}
+
+void AddRegistrySteamCandidate(std::vector<fs::path>& candidates, HKEY root, const wchar_t* subkey,
+                               REGSAM view) {
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, &key) != ERROR_SUCCESS) return;
+    wchar_t value[MAX_PATH * 4]{};
+    DWORD bytes = sizeof(value);
+    DWORD type = 0;
+    if (RegQueryValueExW(key, L"InstallPath", nullptr, &type,
+                         reinterpret_cast<LPBYTE>(value), &bytes) == ERROR_SUCCESS &&
+        (type == REG_SZ || type == REG_EXPAND_SZ)) {
+        AddSteamCandidate(candidates, value);
+    }
+    RegCloseKey(key);
+}
+
+void AddLibraryFolderCandidates(std::vector<fs::path>& candidates, const fs::path& steam) {
+    const fs::path file = steam / L"steamapps\\libraryfolders.vdf";
+    std::ifstream input(file);
+    if (!input) return;
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::string key = "\"path\"";
+        const size_t keyPos = line.find(key);
+        if (keyPos == std::string::npos) continue;
+        const size_t firstQuote = line.find('"', keyPos + key.size());
+        if (firstQuote == std::string::npos) continue;
+        const size_t secondQuote = line.find('"', firstQuote + 1);
+        if (secondQuote == std::string::npos) continue;
+        std::string value = line.substr(firstQuote + 1, secondQuote - firstQuote - 1);
+        for (size_t pos = 0; (pos = value.find("\\\\", pos)) != std::string::npos; ) value.replace(pos, 2, "\\");
+        AddSteamCandidate(candidates, fs::path(std::wstring(value.begin(), value.end())));
+    }
+}
+
+bool HasSteamVr(const fs::path& steam) {
+    return !steam.empty() && fs::exists(steam / L"steamapps\\common\\SteamVR\\bin\\win64\\vrmonitor.exe") &&
+           fs::exists(steam / L"steamapps\\common\\SteamVR\\drivers");
+}
+
 fs::path FindSteam() {
+    std::vector<fs::path> candidates;
     const wchar_t* p86 = _wgetenv(L"ProgramFiles(x86)");
     const wchar_t* p64 = _wgetenv(L"ProgramFiles");
-    if (p86 && fs::exists(fs::path(p86) / L"Steam")) return fs::path(p86) / L"Steam";
-    if (p64 && fs::exists(fs::path(p64) / L"Steam")) return fs::path(p64) / L"Steam";
-    if (fs::exists(L"C:\\Steam")) return L"C:\\Steam";
+    if (p86) AddSteamCandidate(candidates, fs::path(p86) / L"Steam");
+    if (p64) AddSteamCandidate(candidates, fs::path(p64) / L"Steam");
+    AddSteamCandidate(candidates, L"C:\\Steam");
+    AddRegistrySteamCandidate(candidates, HKEY_CURRENT_USER, L"Software\\Valve\\Steam", KEY_WOW64_64KEY);
+    AddRegistrySteamCandidate(candidates, HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", KEY_WOW64_64KEY);
+    AddRegistrySteamCandidate(candidates, HKEY_LOCAL_MACHINE, L"SOFTWARE\\Valve\\Steam", KEY_WOW64_32KEY);
+    for (size_t i = 0; i < candidates.size(); ++i) AddLibraryFolderCandidates(candidates, candidates[i]);
+    for (const auto& candidate : candidates) if (HasSteamVr(candidate)) return candidate;
     return {};
+}
+
+fs::path PickSteamFolder() {
+    BROWSEINFOW browse{};
+    browse.hwndOwner = g_window;
+    browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    browse.lpszTitle = L"SteamVR was not found automatically. Select your Steam installation folder.";
+    PIDLIST_ABSOLUTE selected = SHBrowseForFolderW(&browse);
+    if (!selected) return {};
+    wchar_t path[MAX_PATH]{};
+    const bool ok = SHGetPathFromIDListW(selected, path) != FALSE;
+    CoTaskMemFree(selected);
+    return ok ? fs::path(path) : fs::path{};
 }
 
 void SetStatus(const wchar_t* text) {
@@ -82,8 +151,9 @@ bool CreateShortcut(const fs::path& target, const fs::path& iconPath, const wcha
 
 bool InstallPayload() {
     const fs::path package = ModuleDir();
-    const fs::path steam = FindSteam();
-    if (steam.empty()) return false;
+    fs::path steam = FindSteam();
+    if (!HasSteamVr(steam)) steam = PickSteamFolder();
+    if (!HasSteamVr(steam)) return false;
     const fs::path steamVr = steam / L"steamapps\\common\\SteamVR";
     const fs::path driverSource = package / L"steamvr_driver\\driver_bigscreen_desktop";
     const fs::path driverTarget = steamVr / L"drivers\\driver_bigscreen_desktop";
@@ -92,6 +162,8 @@ bool InstallPayload() {
     SetStatus(L"Installing Bigscreen Desktop files...");
     const fs::path install = fs::path(_wgetenv(L"LOCALAPPDATA")) / L"BigscreenDesktopBridge";
     fs::create_directories(install);
+    std::wofstream selectedSteam(install / L"steam_path.txt", std::ios::trunc);
+    if (selectedSteam) selectedSteam << steam.wstring();
     fs::copy_file(package / L"BigscreenDesktopBridge.exe", install / L"BigscreenDesktopBridge.exe", fs::copy_options::overwrite_existing);
     fs::copy_file(package / L"BigscreenDesktopViewer.exe", install / L"BigscreenDesktopViewer.exe", fs::copy_options::overwrite_existing);
     fs::copy_file(package / L"BigscreenDesktopLauncher.exe", install / L"BigscreenDesktopLauncher.exe", fs::copy_options::overwrite_existing);

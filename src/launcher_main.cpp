@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <TlHelp32.h>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <map>
@@ -120,6 +121,12 @@ fs::path ModuleDir() {
 }
 
 fs::path FindSteam() {
+    const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA");
+    if (localAppData) {
+        std::wifstream selected(fs::path(localAppData) / L"BigscreenDesktopBridge\\steam_path.txt");
+        std::wstring saved;
+        if (selected && std::getline(selected, saved) && fs::exists(saved)) return fs::path(saved);
+    }
     const wchar_t* p86 = _wgetenv(L"ProgramFiles(x86)");
     const wchar_t* p64 = _wgetenv(L"ProgramFiles");
     if (p86 && fs::exists(fs::path(p86) / L"Steam")) return fs::path(p86) / L"Steam";
