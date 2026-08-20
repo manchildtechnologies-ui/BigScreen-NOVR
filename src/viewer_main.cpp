@@ -25,6 +25,7 @@ IDXGISwapChain* g_swap = nullptr;
 ID3D11RenderTargetView* g_rtv = nullptr;
 ID3D11VertexShader* g_vs = nullptr;
 ID3D11PixelShader* g_ps = nullptr;
+ID3D11PixelShader* g_psFlip = nullptr;
 ID3D11SamplerState* g_sampler = nullptr;
 ID3D11Texture2D* g_sharedTexture = nullptr;
 IDXGIKeyedMutex* g_sharedMutex = nullptr;
@@ -105,6 +106,7 @@ void ReleaseAll() {
     if (g_rtv) g_rtv->Release();
     if (g_sampler) g_sampler->Release();
     if (g_ps) g_ps->Release();
+    if (g_psFlip) g_psFlip->Release();
     if (g_vs) g_vs->Release();
     if (g_swap) g_swap->Release();
     if (g_context) g_context->Release();
@@ -115,6 +117,7 @@ void ReleaseAll() {
     g_rtv = nullptr;
     g_sampler = nullptr;
     g_ps = nullptr;
+    g_psFlip = nullptr;
     g_vs = nullptr;
     g_swap = nullptr;
     g_context = nullptr;
@@ -162,7 +165,7 @@ bool CopyThirdPersonFrame() {
 
 void SelectViewSource(ViewSource source) {
     g_viewSource = source;
-    g_thirdUnavailable = false;
+    if (source == ViewSource::ThirdPerson) g_thirdUnavailable = false;
     if (source == ViewSource::FirstPerson) ReleaseThirdPersonResources();
 }
 
@@ -236,6 +239,9 @@ bool InitD3D() {
     const char* pixelCode =
         "Texture2D t:register(t0);SamplerState s:register(s0);"
         "float4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return t.Sample(s,uv);}";
+    const char* pixelFlipCode =
+        "Texture2D t:register(t0);SamplerState s:register(s0);"
+        "float4 main(float4 p:SV_Position,float2 uv:TEXCOORD0):SV_Target{return t.Sample(s,float2(uv.x,1.0-uv.y));}";
     ID3DBlob* blob = nullptr;
     ID3DBlob* errors = nullptr;
     hr = D3DCompile(vertexCode, std::strlen(vertexCode), nullptr, nullptr, nullptr, "main", "vs_5_0", 0, 0, &blob, &errors);
@@ -246,6 +252,11 @@ bool InitD3D() {
     hr = D3DCompile(pixelCode, std::strlen(pixelCode), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &blob, &errors);
     if (FAILED(hr)) { if (errors) errors->Release(); return false; }
     hr = g_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &g_ps);
+    blob->Release();
+    if (FAILED(hr)) return false;
+    hr = D3DCompile(pixelFlipCode, std::strlen(pixelFlipCode), nullptr, nullptr, nullptr, "main", "ps_5_0", 0, 0, &blob, &errors);
+    if (FAILED(hr)) { if (errors) errors->Release(); return false; }
+    hr = g_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr, &g_psFlip);
     blob->Release();
     if (FAILED(hr)) return false;
     D3D11_SAMPLER_DESC samplerDesc{};
@@ -325,7 +336,7 @@ bool CopyNewFrame() {
     return true;
 }
 
-void Render(ID3D11ShaderResourceView* source) {
+void Render(ID3D11ShaderResourceView* source, bool flipVertical) {
     RECT rect{};
     GetClientRect(g_hwnd, &rect);
     const float windowWidth = static_cast<float>(std::max<LONG>(1, rect.right));
@@ -349,7 +360,7 @@ void Render(ID3D11ShaderResourceView* source) {
         g_context->RSSetViewports(1, &viewport);
         g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         g_context->VSSetShader(g_vs, nullptr, 0);
-        g_context->PSSetShader(g_ps, nullptr, 0);
+        g_context->PSSetShader(flipVertical ? g_psFlip : g_ps, nullptr, 0);
         g_context->PSSetSamplers(0, 1, &g_sampler);
         g_context->PSSetShaderResources(0, 1, &source);
         g_context->Draw(3, 0);
@@ -439,7 +450,7 @@ int main() {
         const char* status = g_thirdUnavailable ? " | Third-person camera unavailable" : "";
         sprintf_s(title, "Bigscreen Desktop Live Viewer | View: %s | 1=FIRST PERSON  3=THIRD PERSON%s", view, status);
         SetWindowTextA(g_hwnd, title);
-        Render(source);
+        Render(source, g_viewSource == ViewSource::ThirdPerson);
         UpdateMetrics();
     }
     ReleaseAll();
