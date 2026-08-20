@@ -4,6 +4,7 @@
 #include <dxgi1_2.h>
 
 #include "live_frame_ipc.h"
+#include "third_person_gpu_ipc.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -43,6 +44,19 @@ ULONGLONG g_lastMetrics = 0;
 bool g_waitingLogged = false;
 uint32_t g_sourceWidth = 0;
 uint32_t g_sourceHeight = 0;
+enum class ViewSource { FirstPerson, ThirdPerson };
+ViewSource g_viewSource = ViewSource::FirstPerson;
+HANDLE g_thirdMapping = nullptr;
+bigscreen_third_person_gpu::State* g_thirdState = nullptr;
+ID3D11Texture2D* g_thirdShared = nullptr;
+IDXGIKeyedMutex* g_thirdMutex = nullptr;
+ID3D11Texture2D* g_thirdLocal = nullptr;
+ID3D11ShaderResourceView* g_thirdSrv = nullptr;
+uint64_t g_thirdGeneration = 0;
+uint64_t g_thirdHandle = 0;
+uint64_t g_thirdSequence = 0;
+ULONGLONG g_thirdLastFrame = 0;
+bool g_thirdUnavailable = false;
 
 void Log(const char* fmt, ...) {
     char buffer[1024];
@@ -72,8 +86,20 @@ void ReleaseSharedResources() {
     g_sourceHeight = 0;
 }
 
+void ReleaseThirdPersonResources() {
+    if (g_thirdSrv) g_thirdSrv->Release();
+    if (g_thirdLocal) g_thirdLocal->Release();
+    if (g_thirdMutex) g_thirdMutex->Release();
+    if (g_thirdShared) g_thirdShared->Release();
+    if (g_thirdState) UnmapViewOfFile(g_thirdState);
+    if (g_thirdMapping) CloseHandle(g_thirdMapping);
+    g_thirdSrv = nullptr; g_thirdLocal = nullptr; g_thirdMutex = nullptr; g_thirdShared = nullptr;
+    g_thirdState = nullptr; g_thirdMapping = nullptr; g_thirdGeneration = 0; g_thirdHandle = 0; g_thirdSequence = 0; g_thirdLastFrame = 0;
+}
+
 void ReleaseAll() {
     ReleaseSharedResources();
+    ReleaseThirdPersonResources();
     if (g_state) UnmapViewOfFile(g_state);
     if (g_mapping) CloseHandle(g_mapping);
     if (g_rtv) g_rtv->Release();
@@ -94,6 +120,50 @@ void ReleaseAll() {
     g_context = nullptr;
     g_device = nullptr;
     g_adapter = nullptr;
+}
+
+bool OpenThirdPersonMapping() {
+    if (g_thirdState) return true;
+    g_thirdMapping = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_third_person_gpu::kMappingName);
+    if (!g_thirdMapping) return false;
+    g_thirdState = static_cast<bigscreen_third_person_gpu::State*>(MapViewOfFile(g_thirdMapping, FILE_MAP_READ, 0, 0, sizeof(*g_thirdState)));
+    if (!g_thirdState) { CloseHandle(g_thirdMapping); g_thirdMapping = nullptr; return false; }
+    Log("Third-person GPU metadata mapping opened");
+    return true;
+}
+
+bool OpenThirdPersonShared(const bigscreen_third_person_gpu::State& state) {
+    if (g_thirdSrv) g_thirdSrv->Release();
+    if (g_thirdLocal) g_thirdLocal->Release();
+    if (g_thirdMutex) g_thirdMutex->Release();
+    if (g_thirdShared) g_thirdShared->Release();
+    g_thirdSrv = nullptr; g_thirdLocal = nullptr; g_thirdMutex = nullptr; g_thirdShared = nullptr;
+    HRESULT hr = g_device->OpenSharedResource(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(state.sharedHandle)), IID_PPV_ARGS(&g_thirdShared));
+    if (FAILED(hr)) return false;
+    if (FAILED(g_thirdShared->QueryInterface(IID_PPV_ARGS(&g_thirdMutex)))) { ReleaseThirdPersonResources(); return false; }
+    D3D11_TEXTURE2D_DESC desc{}; g_thirdShared->GetDesc(&desc);
+    D3D11_TEXTURE2D_DESC localDesc = desc; localDesc.MiscFlags = 0; localDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE; localDesc.CPUAccessFlags = 0;
+    if (FAILED(g_device->CreateTexture2D(&localDesc, nullptr, &g_thirdLocal)) || FAILED(g_device->CreateShaderResourceView(g_thirdLocal, nullptr, &g_thirdSrv))) { ReleaseThirdPersonResources(); return false; }
+    g_thirdGeneration = state.generation; g_thirdHandle = state.sharedHandle; g_sourceWidth = desc.Width; g_sourceHeight = desc.Height;
+    Log("Third-person shared texture opened");
+    return true;
+}
+
+bool CopyThirdPersonFrame() {
+    if (!OpenThirdPersonMapping() || !g_thirdState) return false;
+    const auto snapshot = *g_thirdState;
+    if (snapshot.magic != bigscreen_third_person_gpu::kMagic || snapshot.version != bigscreen_third_person_gpu::kVersion || snapshot.valid == 0 || snapshot.sharedHandle == 0 || snapshot.frameSequence == 0) return false;
+    if (!g_thirdLocal || g_thirdGeneration != snapshot.generation || g_thirdHandle != snapshot.sharedHandle) if (!OpenThirdPersonShared(snapshot)) return false;
+    if (snapshot.frameSequence == static_cast<LONG64>(g_thirdSequence)) return true;
+    if (!g_thirdMutex || FAILED(g_thirdMutex->AcquireSync(1, 0))) return false;
+    g_context->CopyResource(g_thirdLocal, g_thirdShared); g_context->Flush(); g_thirdMutex->ReleaseSync(0);
+    g_thirdSequence = static_cast<uint64_t>(snapshot.frameSequence); g_thirdLastFrame = GetTickCount64(); return true;
+}
+
+void SelectViewSource(ViewSource source) {
+    g_viewSource = source;
+    g_thirdUnavailable = false;
+    if (source == ViewSource::FirstPerson) ReleaseThirdPersonResources();
 }
 
 bool OpenLiveMapping() {
@@ -303,6 +373,10 @@ void UpdateMetrics() {
 }
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_KEYDOWN && (wParam == '1' || wParam == '3')) {
+        SelectViewSource(wParam == '3' ? ViewSource::ThirdPerson : ViewSource::FirstPerson);
+        return 0;
+    }
     if (message == WM_SIZE) ResizeSwapChain(LOWORD(lParam), HIWORD(lParam));
     if (message == WM_NCHITTEST) {
         // The viewer is display-only, so let the rendered client area act as
@@ -345,10 +419,27 @@ int main() {
             TranslateMessage(&message);
             DispatchMessage(&message);
         }
-        OpenLiveMapping();
-        if (g_state) CopyNewFrame();
-        SetWindowTextA(g_hwnd, g_localSrv ? "Bigscreen Desktop Live Viewer" : "Bigscreen Desktop Live Viewer (waiting)");
-        Render(g_localSrv);
+        ID3D11ShaderResourceView* source = nullptr;
+        if (g_viewSource == ViewSource::ThirdPerson) {
+            const bool copied = CopyThirdPersonFrame();
+            if (!copied || !g_thirdSrv || (g_thirdLastFrame && GetTickCount64() - g_thirdLastFrame > 1500)) {
+                g_thirdUnavailable = true;
+                SelectViewSource(ViewSource::FirstPerson);
+            } else {
+                source = g_thirdSrv;
+            }
+        }
+        if (g_viewSource == ViewSource::FirstPerson) {
+            OpenLiveMapping();
+            if (g_state) CopyNewFrame();
+            source = g_localSrv;
+        }
+        char title[256]{};
+        const char* view = g_viewSource == ViewSource::ThirdPerson ? "THIRD PERSON" : "FIRST PERSON";
+        const char* status = g_thirdUnavailable ? " | Third-person camera unavailable" : "";
+        sprintf_s(title, "Bigscreen Desktop Live Viewer | View: %s | 1=FIRST PERSON  3=THIRD PERSON%s", view, status);
+        SetWindowTextA(g_hwnd, title);
+        Render(source);
         UpdateMetrics();
     }
     ReleaseAll();
