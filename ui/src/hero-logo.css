@@ -1,0 +1,55 @@
+.hero-spark {
+  display: none !important;
+}
+
+.hero-meta {
+  display: none !important;
+}
+
+.hero::after {
+  content: "";
+  display: block;
+  width: 86px;
+  height: 86px;
+  flex: 0 0 86px;
+  margin-right: 0;
+  background: url('/in-app-logo.png') center / contain no-repeat;
+  filter: drop-shadow(0 0 15px #208cff88);
+}
+
+.hero h1 {
+  width: min(760px, 70vw);
+  height: 150px;
+  margin: 0;
+  font-size: 0 !important;
+  line-height: 0 !important;
+}
+
+.hero h1::before {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: url('/app-logo-long.png') left center / contain no-repeat;
+}
+
+.hero p {
+  display: none !important;
+}
+
+.boot-splash {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  background: #040d1c;
+  overflow: hidden;
+}
+
+.boot-splash video {
+  display: block;
+  width: min(100%, 1100px);
+  max-height: 100%;
+  object-fit: contain;
+}

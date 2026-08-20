@@ -1,0 +1,24 @@
+.topbar {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  cursor: move;
+}
+
+.topbar > * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.window-actions,
+.window-actions button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.app-shell .topbar {
+  display: none !important;
+}
+
+.app-shell .content {
+  height: 100vh !important;
+}
