@@ -1,5 +1,13 @@
 # Bigscreen NOVR
 
+
+
+
+<img width="1276" height="927" alt="image" src="https://github.com/user-attachments/assets/beac986a-f5f7-4776-ab87-355679c35294" />
+
+<img width="1275" height="933" alt="image" src="https://github.com/user-attachments/assets/718d176a-c965-48b6-951a-222a1d5d0d92" />
+
+
 Bigscreen NOVR is a community desktop viewer and control bridge for Bigscreen. This build provides a keyboard-and-Xbox-controller Controls page, first-person and third-person viewing modes, and a native bridge for forwarding desktop controller input into the runtime.
 
 ## Current build
@@ -35,6 +43,9 @@ Bigscreen NOVR is a community desktop viewer and control bridge for Bigscreen. T
 - Arrow keys — Adjust camera pitch and yaw
 - `F6` — Toggle virtual controllers
 - `Esc` — Close / go back
+
+
+
 
 ## Build the Windows application
 
