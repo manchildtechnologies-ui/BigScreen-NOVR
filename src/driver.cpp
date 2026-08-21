@@ -1,6 +1,7 @@
 #include <openvr_driver.h>
 #include <Windows.h>
 #include "controller_ipc.h"
+#include "controller_control_ipc.h"
 #include "pose_ipc.h"
 #include "direct_mode.h"
 #include "bindings.h"
@@ -566,7 +567,11 @@ public:
         if (!active_) return;
         (void)dt;
         bigscreen_desktop_controller_ipc::ControllerState controller{};
-        const bool inputActive = ReadController(controller);
+        bigscreen_controller_control_ipc::State control{};
+        const bool controlReady = ReadControl(control);
+        const bool thirdPerson = controlReady && control.viewRequest == static_cast<uint32_t>(bigscreen_controller_control_ipc::ViewRequest::Third);
+        const bool inputActive = ReadController(controller) && (!controlReady || control.virtualControllersEnabled != 0);
+        const bool syntheticInput = inputActive && !thirdPerson;
 
         double positionX = 0.0;
         double positionZ = 0.0;
@@ -607,25 +612,25 @@ public:
         pose_ = next;
         if (g_host) g_host->TrackedDevicePoseUpdated(index_, pose_, sizeof(pose_));
 
-        const bool a = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
-        const bool b = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_B) != 0;
-        const bool x = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_X) != 0;
-        const bool y = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_Y) != 0;
-        const bool leftBumper = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_LeftBumper) != 0;
-        const bool rightBumper = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightBumper) != 0;
-        const bool leftStick = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_LeftStick) != 0;
-        const bool rightStick = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) != 0;
-        const bool view = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_View) != 0;
-        const bool menu = inputActive && (controller.buttons & bigscreen_desktop_controller_ipc::Button_Menu) != 0;
-        const bool configuredTrigger = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrigger, controller);
-        const bool configuredGrip = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRGrip, controller);
-        const bool configuredMenu = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRMenu, controller);
-        const bool configuredTrackpad = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrackpadClick, controller);
-        const bool configuredMic = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::MicToggle, controller);
-        const bool configuredArmUp = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmUp, controller);
-        const bool configuredArmDown = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmDown, controller);
-        const bool configuredArmLeft = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmLeft, controller);
-        const bool configuredArmRight = inputActive && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmRight, controller);
+        const bool a = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
+        const bool b = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_B) != 0;
+        const bool x = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_X) != 0;
+        const bool y = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_Y) != 0;
+        const bool leftBumper = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_LeftBumper) != 0;
+        const bool rightBumper = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightBumper) != 0;
+        const bool leftStick = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_LeftStick) != 0;
+        const bool rightStick = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) != 0;
+        const bool view = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_View) != 0;
+        const bool menu = syntheticInput && (controller.buttons & bigscreen_desktop_controller_ipc::Button_Menu) != 0;
+        const bool configuredTrigger = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrigger, controller);
+        const bool configuredGrip = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRGrip, controller);
+        const bool configuredMenu = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRMenu, controller);
+        const bool configuredTrackpad = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::VRTrackpadClick, controller);
+        const bool configuredMic = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::MicToggle, controller);
+        const bool configuredArmUp = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmUp, controller);
+        const bool configuredArmDown = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmDown, controller);
+        const bool configuredArmLeft = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmLeft, controller);
+        const bool configuredArmRight = syntheticInput && ConfiguredGamepadAction(bindings_, bigscreen_bindings::Action::ArmRight, controller);
 
         // WGI reports D-pad bits, while HID reports the hat switch as 0..7
         // (down=4). Normalize both forms to a Vive trackpad direction.
@@ -693,6 +698,18 @@ public:
     }
 
 private:
+    bool ReadControl(bigscreen_controller_control_ipc::State& out) {
+        if (!controlMapping_) {
+            controlMapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_controller_control_ipc::kMappingName);
+            if (controlMapping_) {
+                controlState_ = static_cast<const bigscreen_controller_control_ipc::State*>(
+                    MapViewOfFile(controlMapping_, FILE_MAP_READ, 0, 0, sizeof(bigscreen_controller_control_ipc::State)));
+                if (!controlState_) { CloseHandle(controlMapping_); controlMapping_ = nullptr; }
+            }
+        }
+        return controlState_ && bigscreen_controller_control_ipc::Read(controlState_, out);
+    }
+
     bool ReadController(bigscreen_desktop_controller_ipc::ControllerState& out) {
         if (!mapping_) {
             mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, bigscreen_desktop_controller_ipc::kMappingName);
@@ -747,10 +764,14 @@ private:
         if (mapping_) CloseHandle(mapping_);
         if (poseState_) UnmapViewOfFile(poseState_);
         if (poseMapping_) CloseHandle(poseMapping_);
+        if (controlState_) UnmapViewOfFile(controlState_);
+        if (controlMapping_) CloseHandle(controlMapping_);
         state_ = nullptr;
         mapping_ = nullptr;
         poseState_ = nullptr;
         poseMapping_ = nullptr;
+        controlState_ = nullptr;
+        controlMapping_ = nullptr;
     }
 
     uint32_t index_ = vr::k_unTrackedDeviceIndexInvalid;
@@ -778,6 +799,8 @@ private:
     const bigscreen_desktop_controller_ipc::ControllerState* state_ = nullptr;
     HANDLE poseMapping_ = nullptr;
     const bigscreen_desktop_ipc::PoseState* poseState_ = nullptr;
+    HANDLE controlMapping_ = nullptr;
+    const bigscreen_controller_control_ipc::State* controlState_ = nullptr;
 };
 
 class Provider final : public vr::IServerTrackedDeviceProvider {

@@ -1,0 +1,7 @@
+This package embeds Frida Core 17.17.0 and a bundled frida-il2cpp-bridge 0.13.1 agent.
+
+Frida Gum's COPYING file is included alongside this notice and contains the required
+attributions for its BSD-licensed source-map and regenerator portions.
+
+The complete upstream license texts are included in this directory. No Python,
+Node.js, npm, frida-tools, or frida.exe runtime is redistributed.

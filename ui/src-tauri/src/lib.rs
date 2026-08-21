@@ -55,6 +55,17 @@ struct ControllerSnapshot {
     dpad: u32,
 }
 
+#[derive(Clone, Serialize)]
+struct ControllerCommand {
+    view_request: u32,
+    reset_epoch: u32,
+    virtual_controllers_enabled: bool,
+    camera_index: i32,
+    camera_distance: f32,
+    camera_height: f32,
+    camera_fov: f32,
+}
+
 #[derive(Default)]
 struct OwnedProcesses {
     bridge: bool,
@@ -371,9 +382,9 @@ fn controller_snapshot() -> ControllerSnapshot {
     unsafe {
         let mapping = OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr());
         if mapping == 0 { return ControllerSnapshot { connected: false, buttons: 0, dpad: 8 }; }
-        let ptr = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size_of::<[u8; 48]>());
+        let ptr = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size_of::<[u8; 40]>());
         if ptr.is_null() { CloseHandle(mapping); return ControllerSnapshot { connected: false, buttons: 0, dpad: 8 }; }
-        let bytes = std::slice::from_raw_parts(ptr as *const u8, 48);
+        let bytes = std::slice::from_raw_parts(ptr as *const u8, 40);
         let connected = u32::from_ne_bytes(bytes[12..16].try_into().unwrap()) != 0;
         let buttons = u32::from_ne_bytes(bytes[40..44].try_into().unwrap());
         let dpad = u32::from_ne_bytes(bytes[44..48].try_into().unwrap());
@@ -390,6 +401,41 @@ fn controller_snapshot() -> ControllerSnapshot {
 
 #[tauri::command]
 fn get_controller_status() -> ControllerSnapshot { controller_snapshot() }
+
+#[cfg(target_os = "windows")]
+fn controller_command() -> ControllerCommand {
+    use std::mem::size_of;
+    let name: Vec<u16> = "Local\\BigscreenDesktopControllerControl".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let mapping = OpenFileMappingW(FILE_MAP_READ, 0, name.as_ptr());
+        if mapping == 0 { return ControllerCommand { view_request: 0, reset_epoch: 0, virtual_controllers_enabled: true, camera_index: 0, camera_distance: 2.5, camera_height: 0.6, camera_fov: 60.0 }; }
+        let ptr = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, size_of::<[u8; 48]>());
+        if ptr.is_null() { CloseHandle(mapping); return ControllerCommand { view_request: 0, reset_epoch: 0, virtual_controllers_enabled: true, camera_index: 0, camera_distance: 2.5, camera_height: 0.6, camera_fov: 60.0 }; }
+        let bytes = std::slice::from_raw_parts(ptr as *const u8, 48);
+        let u32_at = |offset: usize| u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let f32_at = |offset: usize| f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let result = ControllerCommand {
+            view_request: u32_at(12),
+            reset_epoch: u32_at(16),
+            virtual_controllers_enabled: u32_at(20) != 0,
+            camera_index: i32::from_ne_bytes(bytes[24..28].try_into().unwrap()),
+            camera_distance: f32_at(28),
+            camera_height: f32_at(32),
+            camera_fov: f32_at(36),
+        };
+        UnmapViewOfFile(ptr);
+        CloseHandle(mapping);
+        result
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn controller_command() -> ControllerCommand {
+    ControllerCommand { view_request: 0, reset_epoch: 0, virtual_controllers_enabled: true, camera_index: 0, camera_distance: 2.5, camera_height: 0.6, camera_fov: 60.0 }
+}
+
+#[tauri::command]
+fn get_controller_command() -> ControllerCommand { controller_command() }
 #[tauri::command]
 fn save_settings(settings: SettingState) -> SettingState {
     let p = settings_path();
@@ -563,6 +609,7 @@ pub fn run() {
             get_bindings,
             save_bindings,
             get_controller_status,
+            get_controller_command,
             save_settings,
             start_novr,
             stop_novr,

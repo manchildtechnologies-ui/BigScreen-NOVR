@@ -1,5 +1,6 @@
 #include "pose_ipc.h"
 #include "controller_ipc.h"
+#include "controller_control_ipc.h"
 #include "bindings.h"
 
 #include <Windows.h>
@@ -38,6 +39,7 @@ constexpr float kControllerDeadzone = 0.15f;
 constexpr double kXboxRightStickYawRate = 2.4;
 constexpr double kXboxRightStickPitchRate = 2.0;
 constexpr double kXboxWalkSpeedMetersPerSecond = 1.75;
+constexpr double kXboxSprintMultiplier = 1.75;
 
 struct XboxState {
     bool connected = false;
@@ -61,6 +63,18 @@ uint32_t CanonicalDpadMask(uint32_t dpad) {
     default: return 0;
     }
 }
+
+struct ControllerControlRuntime {
+    HANDLE mapping = nullptr;
+    bigscreen_controller_control_ipc::State* state = nullptr;
+    uint32_t viewRequest = 0;
+    uint32_t resetEpoch = 0;
+    bool virtualControllersEnabled = true;
+    int32_t cameraIndex = 0;
+    float cameraDistance = 2.5f;
+    float cameraHeight = 0.6f;
+    float cameraFov = 60.0f;
+};
 
 bool GamepadActionDown(const std::map<bigscreen_bindings::Action, bigscreen_bindings::Binding>& bindings,
                        bigscreen_bindings::Action action, const XboxState& xbox) {
@@ -618,7 +632,7 @@ void PrintStatus(double yaw, double pitch, bool connected, bool mouseLookActive,
 }
 }
 
-int main() {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     winrt::init_apartment(winrt::apartment_type::multi_threaded);
     using namespace bigscreen_desktop_ipc;
 
@@ -658,6 +672,33 @@ int main() {
     }
     *controllerState = bigscreen_desktop_controller_ipc::ControllerState{};
     bigscreen_desktop_controller_ipc::Publish(controllerState, false, 0, 0, 0, 0, 0, 0, 0, 8);
+    ControllerControlRuntime control{};
+    control.mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                         0, static_cast<DWORD>(sizeof(bigscreen_controller_control_ipc::State)),
+                                         bigscreen_controller_control_ipc::kMappingName);
+    if (!control.mapping) {
+        std::fprintf(stderr, "CreateFileMapping controller control failed: %lu\n", GetLastError());
+        UnmapViewOfFile(controllerState);
+        CloseHandle(controllerMapping);
+        UnmapViewOfFile(state);
+        CloseHandle(mapping);
+        return 1;
+    }
+    control.state = static_cast<bigscreen_controller_control_ipc::State*>(MapViewOfFile(
+        control.mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(bigscreen_controller_control_ipc::State)));
+    if (!control.state) {
+        std::fprintf(stderr, "MapViewOfFile controller control failed: %lu\n", GetLastError());
+        CloseHandle(control.mapping);
+        UnmapViewOfFile(controllerState);
+        CloseHandle(controllerMapping);
+        UnmapViewOfFile(state);
+        CloseHandle(mapping);
+        return 1;
+    }
+    *control.state = bigscreen_controller_control_ipc::State{};
+    bigscreen_controller_control_ipc::Publish(control.state, control.viewRequest, control.resetEpoch,
+                                               control.virtualControllersEnabled, control.cameraIndex,
+                                               control.cameraDistance, control.cameraHeight, control.cameraFov);
     std::printf("[A-TRACE] IPC layout size=%zu magic=0x%08X version=%u\n",
                 sizeof(bigscreen_desktop_controller_ipc::ControllerState),
                 bigscreen_desktop_controller_ipc::kMagic,
@@ -669,6 +710,7 @@ int main() {
     std::printf("BigscreenDesktopBridge keyboard input\n");
     std::printf("Shared memory: %ls\n", kMappingName);
     std::printf("Controller IPC: %ls\n", bigscreen_desktop_controller_ipc::kMappingName);
+    std::printf("Controller control IPC: %ls\n", bigscreen_controller_control_ipc::kMappingName);
 
     const HWND consoleWindow = GetConsoleWindow();
     const auto bindings = bigscreen_bindings::Load(bigscreen_bindings::SettingsPath());
@@ -690,6 +732,7 @@ int main() {
     double positionX = 0.0;
     double positionZ = 0.0;
     uint32_t previousButtons = 0;
+    bool thirdPersonActive = false;
     bool publishedA = false;
     ULONGLONG lastTick = GetTickCount64();
     ULONGLONG lastDisplay = 0;
@@ -752,6 +795,39 @@ int main() {
             xbox.buttons = hidXbox.buttons;
             xbox.dpad = hidXbox.dpad;
         }
+        const uint32_t dpadMask = CanonicalDpadMask(xbox.dpad);
+        const uint32_t risingButtons = xbox.buttons & ~previousButtons;
+        const auto pressed = [risingButtons](uint32_t button) { return (risingButtons & button) != 0; };
+        if (pressed(bigscreen_desktop_controller_ipc::Button_A)) {
+            thirdPersonActive = false;
+            control.viewRequest = static_cast<uint32_t>(bigscreen_controller_control_ipc::ViewRequest::First);
+        }
+        if (pressed(bigscreen_desktop_controller_ipc::Button_B)) {
+            thirdPersonActive = true;
+            control.viewRequest = static_cast<uint32_t>(bigscreen_controller_control_ipc::ViewRequest::Third);
+        }
+        if (pressed(bigscreen_desktop_controller_ipc::Button_X)) {
+            control.virtualControllersEnabled = !control.virtualControllersEnabled;
+        }
+        if (pressed(bigscreen_desktop_controller_ipc::Button_Y)) {
+            yaw = 0.0;
+            pitch = 0.0;
+            ++control.resetEpoch;
+        }
+        if (!thirdPersonActive && pressed(bigscreen_desktop_controller_ipc::Button_RightStick)) {
+            yaw = 0.0;
+            pitch = 0.0;
+        }
+        if (thirdPersonActive) {
+            if (pressed(bigscreen_desktop_controller_ipc::Button_LeftBumper)) --control.cameraIndex;
+            if (pressed(bigscreen_desktop_controller_ipc::Button_RightBumper)) ++control.cameraIndex;
+            if (dpadMask & 0x40u) control.cameraHeight = std::clamp(control.cameraHeight + static_cast<float>(dt * 0.8), -0.5f, 2.5f);
+            if (dpadMask & 0x80u) control.cameraHeight = std::clamp(control.cameraHeight - static_cast<float>(dt * 0.8), -0.5f, 2.5f);
+            if (dpadMask & 0x100u) control.cameraFov = std::clamp(control.cameraFov - static_cast<float>(dt * 6.0), 35.0f, 100.0f);
+            if (dpadMask & 0x200u) control.cameraFov = std::clamp(control.cameraFov + static_cast<float>(dt * 6.0), 35.0f, 100.0f);
+            if (xbox.leftTrigger > 0.5f) control.cameraDistance = std::clamp(control.cameraDistance + static_cast<float>(dt * 1.2), 1.2f, 6.0f);
+            if (xbox.rightTrigger > 0.5f) control.cameraDistance = std::clamp(control.cameraDistance - static_cast<float>(dt * 1.2), 1.2f, 6.0f);
+        }
         float rightX = 0.0f;
         float rightY = 0.0f;
         ApplyRadialDeadzone(xbox.rightX, xbox.rightY, rightX, rightY);
@@ -759,8 +835,7 @@ int main() {
             // HID horizontal polarity is opposite the desired look direction.
             yaw -= static_cast<double>(rightX) * kXboxRightStickYawRate * dt;
             pitch -= static_cast<double>(rightY) * kXboxRightStickPitchRate * dt;
-            if ((xbox.buttons & bigscreen_desktop_controller_ipc::Button_RightStick) &&
-                !(previousButtons & bigscreen_desktop_controller_ipc::Button_RightStick)) {
+            if (!thirdPersonActive && pressed(bigscreen_desktop_controller_ipc::Button_RightStick)) {
                 yaw = 0.0;
                 pitch = 0.0;
             }
@@ -774,7 +849,8 @@ int main() {
             const double forwardZ = -std::cos(yaw);
             const double rightDirectionX = std::cos(yaw);
             const double rightDirectionZ = -std::sin(yaw);
-            const double distance = kXboxWalkSpeedMetersPerSecond * dt;
+            const double sprint = (xbox.buttons & bigscreen_desktop_controller_ipc::Button_LeftStick) ? kXboxSprintMultiplier : 1.0;
+            const double distance = kXboxWalkSpeedMetersPerSecond * sprint * dt;
             positionX += (forwardX * static_cast<double>(-leftY) +
                           rightDirectionX * static_cast<double>(leftX)) * distance;
             positionZ += (forwardZ * static_cast<double>(-leftY) +
@@ -786,6 +862,9 @@ int main() {
         bigscreen_desktop_controller_ipc::Publish(controllerState, xbox.connected,
                                                   xbox.leftX, xbox.leftY, xbox.rightX, xbox.rightY,
                                                   xbox.leftTrigger, xbox.rightTrigger, xbox.buttons, xbox.dpad);
+        bigscreen_controller_control_ipc::Publish(control.state, control.viewRequest, control.resetEpoch,
+                                                  control.virtualControllersEnabled, control.cameraIndex,
+                                                  control.cameraDistance, control.cameraHeight, control.cameraFov);
         const bool currentA = (xbox.buttons & bigscreen_desktop_controller_ipc::Button_A) != 0;
         if (currentA != publishedA) {
             std::printf("[A-TRACE] IPC publish A=%s connected=%s sequence=%ld\n",
@@ -803,8 +882,13 @@ int main() {
 
     Publish(state, positionX, positionZ, yaw, pitch, false, viewMode);
     bigscreen_desktop_controller_ipc::Publish(controllerState, false, 0, 0, 0, 0, 0, 0, 0, 8);
+    bigscreen_controller_control_ipc::Publish(control.state, control.viewRequest, control.resetEpoch,
+                                              false, control.cameraIndex, control.cameraDistance,
+                                              control.cameraHeight, control.cameraFov);
     xboxReader.Stop();
     std::printf("\nBridge exited.\n");
+    UnmapViewOfFile(control.state);
+    CloseHandle(control.mapping);
     UnmapViewOfFile(controllerState);
     CloseHandle(controllerMapping);
     if (rawInputWindow) DestroyWindow(rawInputWindow);

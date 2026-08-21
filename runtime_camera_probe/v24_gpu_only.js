@@ -1,5 +1,5 @@
-const exportDllPath = "C:\\Users\\Vintendo\\.codex\\visualizations\\2026\\08\\15\\01a006ed-09d5-7162-9813-b955b1cf1bd9\\BigscreenDesktopBridge\\runtime_camera_probe\\v22a-native\\build\\Release\\BigscreenThirdPersonGpuExport.dll";
-const exportReportPath = "C:\\Users\\Vintendo\\AppData\\Local\\Temp\\BigscreenV24-GPU.txt";
+const exportDllPath = "BigscreenThirdPersonGpuExport.dll";
+const exportReportPath = "BigscreenV24-GPU.txt";
 const textValue = o => typeof o === "string" ? o : (o?.content ?? "");
 
 Il2Cpp.perform(() => {
@@ -45,6 +45,7 @@ Il2Cpp.perform(() => {
     const setTarget = captureCamera.method("set_targetTexture");
     const camTransform = captureGo.method("get_transform").invoke();
     const lookRotation = quatClass.methods.find(m => m.name === "LookRotation" && m.parameterCount === 2);
+    const setFieldOfView = cameraClass.methods.find(m => m.name === "set_fieldOfView" && m.parameterCount === 1);
     const posMem = Il2Cpp.alloc(12); const upMem = Il2Cpp.alloc(12); const forwardMem = Il2Cpp.alloc(12);
     const posValue = new Il2Cpp.ValueType(posMem, vec3Class.type); const upValue = new Il2Cpp.ValueType(upMem, vec3Class.type); const forwardValue = new Il2Cpp.ValueType(forwardMem, vec3Class.type);
     const writeVec = (mem, v) => { mem.add(0).writeFloat(v.x); mem.add(4).writeFloat(v.y); mem.add(8).writeFloat(v.z); };
@@ -52,6 +53,20 @@ Il2Cpp.perform(() => {
     const add = (a,b) => ({x:a.x+b.x,y:a.y+b.y,z:a.z+b.z});
     const mul = (a,s) => ({x:a.x*s,y:a.y*s,z:a.z*s});
     const sub = (a,b) => ({x:a.x-b.x,y:a.y-b.y,z:a.z-b.z});
+    const controlMappingName = "Local\\BigscreenDesktopControllerControl";
+    const openFileMapping = new NativeFunction(Module.getExportByName(null, "OpenFileMappingW"), "pointer", ["uint32", "int", "pointer"]);
+    const mapViewOfFile = new NativeFunction(Module.getExportByName(null, "MapViewOfFile"), "pointer", ["pointer", "uint32", "uint32", "uint32", "ulong"]);
+    let controlMapping = null, controlView = null;
+    const readControl = () => {
+        try {
+            if (!controlView) {
+                if (!controlMapping) controlMapping = openFileMapping(0x0004, 0, Memory.allocUtf16String(controlMappingName));
+                if (controlMapping && !controlMapping.isNull()) controlView = mapViewOfFile(controlMapping, 0x0004, 0, 0, 40);
+            }
+            if (!controlView || controlView.isNull() || controlView.readU32() !== 0x42444343) return null;
+            return { cameraIndex: controlView.add(24).readS32(), cameraDistance: controlView.add(28).readFloat(), cameraHeight: controlView.add(32).readFloat(), cameraFov: controlView.add(36).readFloat() };
+        } catch (_) { return null; }
+    };
 
     const module = Module.load(exportDllPath);
     const initExport = new NativeFunction(module.getExportByName("InitThirdPersonGpu"), "int", ["pointer", "pointer"]);
@@ -90,12 +105,17 @@ Il2Cpp.perform(() => {
             const avatarForward = readVec(avatarTransform.method("get_forward").invoke());
             const avatarUp = readVec(avatarTransform.method("get_up").invoke());
             const target = add(avatarPos, mul(avatarUp, 1.15));
-            const cameraPos = add(sub(target, mul(avatarForward, 2.5)), mul(avatarUp, 0.6));
+            const control = readControl() ?? { cameraIndex: 0, cameraDistance: 2.5, cameraHeight: 0.6, cameraFov: 60.0 };
+            const index = ((control.cameraIndex % 4) + 4) % 4;
+            const right = { x: avatarForward.z, y: 0, z: -avatarForward.x };
+            const orbitForward = add(mul(avatarForward, Math.cos(index * Math.PI / 2)), mul(right, Math.sin(index * Math.PI / 2)));
+            const cameraPos = add(sub(target, mul(orbitForward, control.cameraDistance)), mul(avatarUp, control.cameraHeight));
             const direction = sub(target, cameraPos);
             writeVec(posMem, cameraPos); writeVec(upMem, avatarUp); writeVec(forwardMem, direction);
             camTransform.method("set_position").invoke(posValue);
             const rotation = lookRotation.invoke(forwardValue, upValue);
             camTransform.method("set_rotation").invoke(rotation);
+            if (setFieldOfView) setFieldOfView.invoke(control.cameraFov);
             const native = rt.method("GetNativeTexturePtr").invoke(); const p = native.handle ?? native;
             const rc = copyExport(p); if (rc !== 0 && frame % 60 === 0) console.log(`V24 export copy rc=${rc}`);
             if (++frame % 60 === 0) console.log(`V24 live GPU frames=${frame} mainTid=${Process.getCurrentThreadId()} camera=${cameraPos.x.toFixed(2)},${cameraPos.y.toFixed(2)},${cameraPos.z.toFixed(2)}`);

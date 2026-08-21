@@ -19,11 +19,12 @@ async function call(name,args, fallbackValue){try{return await invoke(name,args)
 
 export default function App(){
   const [view,setView]=useState('first'),[settingsOpen,setSettingsOpen]=useState(false),[controlsOpen,setControlsOpen]=useState(false),[settings,setSettings]=useState(defaults),[status,setStatus]=useState(fallback),[message,setMessage]=useState('Ready to launch'),[pulse,setPulse]=useState('');
-  const dragActive=useRef(false);
+  const dragActive=useRef(false),controllerViewRequest=useRef(0);
   useEffect(()=>{const bar=document.querySelector('.topbar');if(!bar)return;const drag=e=>{if(e.target.closest('button'))return;dragActive.current=true};const end=()=>{dragActive.current=false};bar.addEventListener('mousedown',drag);window.addEventListener('mouseup',end);window.addEventListener('blur',end);return()=>{bar.removeEventListener('mousedown',drag);window.removeEventListener('mouseup',end);window.removeEventListener('blur',end)}},[]);
   const refresh=async()=>{if(dragActive.current)return status;const next=await call('get_system_status',{},fallback);if(next)setStatus(next);return next};
   useEffect(()=>{call('get_settings',{},defaults).then(s=>{if(s){setSettings(s);setView(s.start_view)}});refresh()},[]);
   useEffect(()=>{const t=setInterval(refresh,3000);return()=>clearInterval(t)},[]);
+  useEffect(()=>{let alive=true;const poll=async()=>{const command=await call('get_controller_command',{},null);if(!alive||!command)return;if(command.view_request&&command.view_request!==controllerViewRequest.current){controllerViewRequest.current=command.view_request;await select(command.view_request===2?'third':'first')}};const t=setInterval(poll,80);poll();return()=>{alive=false;clearInterval(t)}},[]);
   const viewerRunning=status.find(s=>s.label==='Desktop Viewer')?.value==='Running';
   const running=viewerRunning&&status.find(s=>s.label==='NOVR Bridge')?.value==='Running';
   const starting=!running&&(status.some(s=>s.value==='Running')||message==='STARTING');

@@ -404,7 +404,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
 }
 
-int main() {
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     HINSTANCE instance = GetModuleHandleA(nullptr);
     WNDCLASSA windowClass{};
     windowClass.hInstance = instance;

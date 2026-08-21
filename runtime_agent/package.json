@@ -1,0 +1,15 @@
+{
+  "name": "bigscreen-novr-third-person-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "frida-compile src/third_person_agent.js -o dist/third_person_agent.js -c"
+  },
+  "dependencies": {
+    "frida-il2cpp-bridge": "0.13.1"
+  },
+  "devDependencies": {
+    "frida": "^17.17.0",
+    "frida-compile": "19.0.5"
+  }
+}

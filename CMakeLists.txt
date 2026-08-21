@@ -10,6 +10,11 @@ if(NOT EXISTS "${OPENVR_SDK_ROOT}/headers/openvr_driver.h")
   message(FATAL_ERROR "Set OPENVR_SDK_ROOT to an OpenVR SDK checkout containing headers/openvr_driver.h")
 endif()
 
+set(FRIDA_CORE_DEVKIT_ROOT "" CACHE PATH "Path to the official Frida Core Windows x64 devkit")
+if(NOT EXISTS "${FRIDA_CORE_DEVKIT_ROOT}/frida-core.h" OR NOT EXISTS "${FRIDA_CORE_DEVKIT_ROOT}/frida-core.lib")
+  message(FATAL_ERROR "Set FRIDA_CORE_DEVKIT_ROOT to an official Frida Core devkit containing frida-core.h and frida-core.lib")
+endif()
+
 add_library(driver_bigscreen_desktop SHARED
   src/driver.cpp
   src/direct_mode.cpp
@@ -45,7 +50,7 @@ target_include_directories(BigscreenDesktopBridge PRIVATE
 target_link_libraries(BigscreenDesktopBridge PRIVATE setupapi hid runtimeobject)
 set_target_properties(BigscreenDesktopBridge PROPERTIES
   OUTPUT_NAME "BigscreenDesktopBridge"
-  WIN32_EXECUTABLE FALSE
+  WIN32_EXECUTABLE TRUE
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 
@@ -62,13 +67,48 @@ target_link_libraries(BigscreenDesktopViewer PRIVATE
 )
 set_target_properties(BigscreenDesktopViewer PROPERTIES
   OUTPUT_NAME "BigscreenDesktopViewer"
-  WIN32_EXECUTABLE FALSE
+  WIN32_EXECUTABLE TRUE
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 add_custom_command(TARGET BigscreenDesktopViewer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${OPENVR_SDK_ROOT}/bin/win64/openvr_api.dll"
     "$<TARGET_FILE_DIR:BigscreenDesktopViewer>/openvr_api.dll"
+)
+
+add_library(BigscreenThirdPersonGpuExport SHARED
+  runtime_camera_probe/third_person_gpu_export.cpp
+)
+target_include_directories(BigscreenThirdPersonGpuExport PRIVATE src)
+target_compile_features(BigscreenThirdPersonGpuExport PRIVATE cxx_std_17)
+target_compile_definitions(BigscreenThirdPersonGpuExport PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _AMD64_ _WIN64)
+target_link_libraries(BigscreenThirdPersonGpuExport PRIVATE d3d11 dxgi)
+set_target_properties(BigscreenThirdPersonGpuExport PROPERTIES
+  OUTPUT_NAME "BigscreenThirdPersonGpuExport"
+  PREFIX ""
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+)
+
+foreach(runtime_target BigscreenDesktopBridge BigscreenDesktopViewer BigscreenThirdPersonGpuExport)
+  set_target_properties(${runtime_target} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/runtime"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/runtime"
+    ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/runtime"
+  )
+endforeach()
+
+add_executable(BigscreenThirdPersonHost WIN32
+  src/third_person_host.cpp
+)
+target_include_directories(BigscreenThirdPersonHost PRIVATE "${FRIDA_CORE_DEVKIT_ROOT}")
+target_compile_features(BigscreenThirdPersonHost PRIVATE cxx_std_17)
+target_compile_definitions(BigscreenThirdPersonHost PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _AMD64_ _WIN64 UNICODE _UNICODE)
+target_link_libraries(BigscreenThirdPersonHost PRIVATE "${FRIDA_CORE_DEVKIT_ROOT}/frida-core.lib" setupapi)
+set_target_properties(BigscreenThirdPersonHost PROPERTIES
+  OUTPUT_NAME "BigscreenThirdPersonHost"
+  WIN32_EXECUTABLE TRUE
+  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/runtime"
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 
 add_executable(BigscreenFrameDump

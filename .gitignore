@@ -6,3 +6,8 @@ backups/
 *.vcxproj
 *.vcxproj.filters
 *.sln
+ui/node_modules/
+ui/dist/
+ui/src-tauri/target/
+runtime_agent/node_modules/
+runtime_agent/dist/
